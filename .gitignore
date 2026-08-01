@@ -1,0 +1,14 @@
+build/
+
+# Game asset archives are hundreds of MB and are not part of this project.
+*.MPQ
+*.mpq
+
+# Real save files and their backups, if any land here while testing.
+*.sv
+*.hsv
+*.bak
+
+# Editor and OS noise.
+.DS_Store
+.idea/

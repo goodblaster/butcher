@@ -1,0 +1,6 @@
+[submodule "third_party/devilution"]
+	path = third_party/devilution
+	url = https://github.com/diasurgical/devilution.git
+[submodule "third_party/ftxui"]
+	path = third_party/ftxui
+	url = https://github.com/ArthurSonzogni/FTXUI.git
