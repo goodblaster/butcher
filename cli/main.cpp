@@ -77,6 +77,7 @@ static int cmd_list(int argc, char **argv)
 		return 1;
 	}
 
+	printf("%s\n", dir);
 	printf("slot  %-20s %-9s %-9s %-7s %s\n", "name", "game", "class", "level", "gold");
 	for (int i = 0; i < n; i++) {
 		printf("%4d  ", saves[i].slot);
@@ -935,8 +936,10 @@ static int usage(void)
 	fprintf(stderr,
 	    "butcher -- Diablo and Hellfire character editor\n"
 	    "\n"
-	    "  butcher                     browse your saves in the terminal UI\n"
+	    "  butcher                     browse saves in the current directory\n"
+	    "  butcher --saves             browse the game's own save folder\n"
 	    "  butcher <save>              open one character in the terminal UI\n"
+	    "  butcher <dir>               browse a particular directory\n"
 	    "  butcher <save> --render     draw one frame and exit, for a pipe\n"
 	    "\n"
 	    "Everything below is the command-line interface; naming a subcommand\n"

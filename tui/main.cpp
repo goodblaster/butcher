@@ -177,11 +177,16 @@ int tui_main(int argc, char **argv)
 	char used_dir[SAVE_PATH_MAX] = { 0 };
 	int nsaves = 0;
 	int want_render = 0;
+	int want_saves = 0;
 	const char *arg = nullptr;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--render") == 0)
 			want_render = 1;
+		else if (strcmp(argv[i], "--saves") == 0)
+			want_saves = 1;
+		else if (strncmp(argv[i], "--", 2) == 0)
+			continue; /* --tab, --focus and the flavour flags */
 		else if (arg == nullptr)
 			arg = argv[i];
 	}
@@ -207,8 +212,43 @@ int tui_main(int argc, char **argv)
 			e.hero = h;
 			nsaves = 1;
 		}
-	} else {
+	} else if (want_saves) {
 		nsaves = save_scan_default(saves.data(), SAVE_MAX_SLOTS, used_dir);
+		if (nsaves == 0) {
+			fprintf(stderr, "butcher: no saves found in the usual places%s%s\n",
+			    used_dir[0] ? ", including " : "", used_dir);
+			return 1;
+		}
+	} else {
+		/*
+		 * Bare invocation. The current directory is the only context this tool
+		 * is entitled to assume; reaching into the game's save folder because
+		 * it happens to exist would mean a file editor picking its own target,
+		 * with no relation to where the user is standing.
+		 */
+		nsaves = save_scan_dir(".", saves.data(), SAVE_MAX_SLOTS);
+		if (nsaves == 0) {
+			char elsewhere[SAVE_PATH_MAX] = { 0 };
+			SaveEntry probe[SAVE_MAX_SLOTS];
+			int found = save_scan_default(probe, SAVE_MAX_SLOTS, elsewhere);
+
+			printf("butcher -- Diablo and Hellfire character editor\n\n");
+			if (found > 0) {
+				printf("No saves in this directory. %d found in your game's "
+				       "save folder:\n\n",
+				    found);
+				printf("    %s\n\n", elsewhere);
+				printf("    butcher --saves        open them\n");
+			} else {
+				printf("No saves in this directory, and none in the usual "
+				       "places.\n\n");
+			}
+			printf("    butcher <save>         open one character\n");
+			printf("    butcher <directory>    browse a directory\n");
+			printf("    butcher --help         every command\n");
+			return 0;
+		}
+		snprintf(used_dir, sizeof(used_dir), ".");
 	}
 
 	if (nsaves == 0) {

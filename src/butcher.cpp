@@ -7,6 +7,10 @@
  * the terminal UI. That keeps `butcher single_0.hsv` immediate while leaving
  * every scriptable operation exactly where it was.
  *
+ * A bare `butcher` looks only in the current directory. It will say where your
+ * game keeps its saves, but it will not open them uninvited -- picking a target
+ * unrelated to where the user is standing is not a file editor's business.
+ *
  * The two front ends share the library in src/ and neither invokes the other;
  * this file only chooses which one runs.
  */

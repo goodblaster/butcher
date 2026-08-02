@@ -83,10 +83,16 @@ never opened for writing.
 ## The terminal UI
 
 ```bash
-butcher                      # find your saves and pick one
+butcher                      # saves in the current directory
+butcher --saves              # the game's own save folder
 butcher <save>               # open one directly
 butcher <dir>                # browse a particular directory
 ```
+
+A bare `butcher` looks **only in the current directory**. If there is nothing
+there it tells you where your game keeps its saves and how to open them, but it
+will not reach into that folder uninvited — your working directory is the only
+context it assumes.
 
 It opens on a picker, or straight into a character sheet with three panes —
 **Attributes**, **Spells**, **Inventory**.
