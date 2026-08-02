@@ -244,6 +244,75 @@ static void check_caps(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 3b. Spells stay inside the save's own game                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * From a real defect: a Warrior edited here stopped appearing in the game's
+ * character list. The spell pane is built once and covers both games, hiding
+ * rows the current flavour lacks at render time -- but hidden is not the same
+ * as absent, and Compose() wrote them all. The save ended up with a book bit
+ * for id 37, which Diablo's 37-row spelldata[] cannot index.
+ */
+static void check_spell_flavor(void)
+{
+	section("3b. composing cannot write a spell the save's game lacks");
+
+	Editor ed;
+	PkPlayerStruct h;
+	base_hero(&h, "Aidan", PC_WARRIOR);
+
+	ed.Load(make_entry("/tmp/single_0.sv", h));
+
+	/* Whatever the pane leaves set, a Diablo save must not receive it. */
+	for (int s = 0; s < Editor::kSpellSlots; s++) {
+		ed.spell_lvl[s] = 3;
+		ed.spell_known[s] = true;
+	}
+	PkPlayerStruct out = ed.Compose();
+
+	int stray = 0;
+	for (int s = hero_spell_slots(FLAVOR_DIABLO); s < hero_spell_persisted(); s++)
+		if (hero_get_spell_level(&out, s) != 0 || (out.pMemSpells & SPELLBIT(s)) != 0)
+			stray++;
+	ok(stray == 0, "no spell id beyond Diablo's table survives Compose");
+
+	int nobook = 0;
+	for (int s = 1; s < hero_spell_slots(FLAVOR_DIABLO); s++)
+		if ((out.pMemSpells & SPELLBIT(s)) != 0
+		    && !hero_spell_has_book(FLAVOR_DIABLO, s))
+			nobook++;
+	ok(nobook == 0, "and nothing without a book lands in the spell book");
+
+	char err[HERO_ERR_LEN];
+	ok(hero_validate(&out, FLAVOR_DIABLO, err), "so the result validates");
+	if (!hero_validate(&out, FLAVOR_DIABLO, err))
+		printf("        %s\n", err);
+
+	/* Hellfire keeps the ids Diablo cannot hold. */
+	ed.Load(make_entry("/tmp/single_0.hsv", h));
+	for (int s = 0; s < Editor::kSpellSlots; s++) {
+		ed.spell_lvl[s] = 3;
+		ed.spell_known[s] = true;
+	}
+	PkPlayerStruct hf = ed.Compose();
+	ok(hero_get_spell_level(&hf, 37) == 3, "a Hellfire save still gets id 37");
+	ok(hero_validate(&hf, FLAVOR_HELLFIRE, err), "and validates as Hellfire");
+
+	/*
+	 * The repair path: opening a save that already holds a foreign id and
+	 * saving it must clear the id rather than preserve it.
+	 */
+	base_hero(&h, "Aidan", PC_WARRIOR);
+	h.pMemSpells |= SPELLBIT(37);
+	ed.Load(make_entry("/tmp/single_0.sv", h));
+	PkPlayerStruct fixed = ed.Compose();
+	ok((fixed.pMemSpells & SPELLBIT(37)) == 0,
+	    "opening a damaged save and composing clears the foreign id");
+	ok(hero_validate(&fixed, FLAVOR_DIABLO, err), "so a damaged save can be repaired");
+}
+
+/* ------------------------------------------------------------------ */
 /* 4. Name sanitising                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -289,6 +358,7 @@ int main(void)
 	check_addresses();
 	check_roundtrip();
 	check_caps();
+	check_spell_flavor();
 	check_names();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

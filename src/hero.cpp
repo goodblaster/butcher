@@ -232,6 +232,34 @@ const char *hero_spell_name(HeroFlavor f, int spell)
 	                            : spelldata[spell].sNameText;
 }
 
+/** The spelldata[] row for @p spell, or NULL if this flavor has no such id. */
+static const SpellData *spell_row(HeroFlavor f, int spell)
+{
+	if (spell < 0 || spell >= hero_spell_slots(f))
+		return NULL;
+	return f == FLAVOR_HELLFIRE ? &spelldata_hf[spell] : &spelldata[spell];
+}
+
+int hero_spell_exists(HeroFlavor f, int spell)
+{
+	const SpellData *sd = spell_row(f, spell);
+	/* Id 0 is SPL_NULL, a placeholder with no name and nothing to cast. */
+	return spell > 0 && sd != NULL && sd->sNameText != NULL;
+}
+
+int hero_spell_has_book(HeroFlavor f, int spell)
+{
+	const SpellData *sd = spell_row(f, spell);
+	if (!hero_spell_exists(f, spell))
+		return 0;
+	return sd->sBookLvl != -1;
+}
+
+int hero_spell_max_level(void)
+{
+	return MAX_SPELL_LEVEL;
+}
+
 int hero_get_spell_level(const PkPlayerStruct *h, int spell)
 {
 	if (spell < 0 || spell >= hero_spell_persisted())
@@ -241,7 +269,8 @@ int hero_get_spell_level(const PkPlayerStruct *h, int spell)
 	return h->pSplLvl2[spell - MAX_SPELLS];
 }
 
-int hero_set_spell_level(PkPlayerStruct *h, int spell, int level, char *err)
+int hero_set_spell_level(PkPlayerStruct *h, HeroFlavor f, int spell, int level,
+    char *err)
 {
 	if (spell <= 0) {
 		seterr(err, "spell id %d is not a real spell", spell);
@@ -254,8 +283,24 @@ int hero_set_spell_level(PkPlayerStruct *h, int spell, int level, char *err)
 		    spell, hero_spell_persisted() - 1);
 		return 0;
 	}
-	if (level < 0 || level > 127) {
-		seterr(err, "spell level must be 0..127");
+	/*
+	 * The id has to exist in the game this save belongs to. Diablo's
+	 * spelldata[] has 37 rows, so id 37 is not an unknown spell -- it is a
+	 * read past the end of the table every time the game touches the spell
+	 * book.
+	 *
+	 * Clearing is always allowed, whatever the id: refusing that would leave
+	 * an already-damaged save with no way to repair it.
+	 */
+	if (level != 0 && !hero_spell_exists(f, spell)) {
+		seterr(err, "spell id %d does not exist in %s, which defines ids 1..%d; "
+		            "the game indexes its spell table directly and would read "
+		            "past the end of it",
+		    spell, hero_flavor_name(f), hero_spell_slots(f) - 1);
+		return 0;
+	}
+	if (level < 0 || level > hero_spell_max_level()) {
+		seterr(err, "spell level must be 0..%d", hero_spell_max_level());
 		return 0;
 	}
 
@@ -264,7 +309,12 @@ int hero_set_spell_level(PkPlayerStruct *h, int spell, int level, char *err)
 	else
 		h->pSplLvl2[spell - MAX_SPELLS] = (char)level;
 
-	if (level > 0)
+	/*
+	 * Only spells with a book can sit in _pMemSpells. The game masks that
+	 * field down to exactly those (Source/player.cpp), so a bit for a class
+	 * skill would be dropped anyway -- better to never write it.
+	 */
+	if (level > 0 && hero_spell_has_book(f, spell))
 		h->pMemSpells |= SPELLBIT(spell);
 	else
 		h->pMemSpells &= ~SPELLBIT(spell);
@@ -668,6 +718,119 @@ void hero_check(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl)
 			    "the book has %s (id %d) set, but only ids 0..%d are written to "
 			    "a save, so the game will drop it",
 			    n != NULL ? n : "a spell", s, hero_spell_persisted() - 1);
+			break;
+		}
+	}
+
+	hero_check_spells(h, f, dl);
+}
+
+/**
+ * Everything the game assumes about a character's spells.
+ *
+ * The game reads spelldata[] straight off these fields, so an id this flavor
+ * does not define is an out-of-bounds access rather than a cosmetic mistake.
+ * The rules here are the ones Source/player.cpp applies to itself: keep only
+ * spells with a book in _pMemSpells, and cap levels at MAX_SPELL_LEVEL.
+ */
+void hero_check_spells(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl)
+{
+	int slots = hero_spell_slots(f);
+	int stray = 0, first_stray = -1;
+	int nobook = 0, first_nobook = -1;
+	int overcap = 0, first_overcap = -1;
+	int negative = 0, first_negative = -1;
+	int orphan_lvl = 0, first_orphan = -1;
+
+	for (int s = 1; s < hero_spell_persisted(); s++) {
+		int lvl = hero_get_spell_level(h, s);
+		int bit = (h->pMemSpells & SPELLBIT(s)) != 0;
+
+		if (lvl == 0 && !bit)
+			continue;
+
+		/* An id this game does not define. */
+		if (s >= slots || hero_spell_name(f, s) == NULL) {
+			stray++;
+			if (first_stray < 0)
+				first_stray = s;
+			continue;
+		}
+
+		if (lvl < 0) {
+			negative++;
+			if (first_negative < 0)
+				first_negative = s;
+		} else if (lvl > hero_spell_max_level()) {
+			overcap++;
+			if (first_overcap < 0)
+				first_overcap = s;
+		}
+
+		if (bit && !hero_spell_has_book(f, s)) {
+			nobook++;
+			if (first_nobook < 0)
+				first_nobook = s;
+		}
+
+		if (lvl > 0 && !bit && hero_spell_has_book(f, s)) {
+			orphan_lvl++;
+			if (first_orphan < 0)
+				first_orphan = s;
+		}
+	}
+
+	if (first_stray >= 0)
+		dl_add(dl, DIAG_ERROR, "spells",
+		    "%d spell id%s set that %s does not define (the first is id %d; this "
+		    "game has ids 1..%d). The game indexes its spell table directly from "
+		    "these fields, so it would read past the end of that table -- clear "
+		    "them before loading this character",
+		    stray, stray == 1 ? " is" : "s are", hero_flavor_name(f), first_stray,
+		    slots - 1);
+
+	if (first_negative >= 0)
+		dl_add(dl, DIAG_ERROR, "spells",
+		    "%d spell%s a negative level (the first is %s, id %d)", negative,
+		    negative == 1 ? " has" : "s have",
+		    hero_spell_name(f, first_negative), first_negative);
+
+	if (first_overcap >= 0)
+		dl_add(dl, DIAG_WARNING, "spells",
+		    "%d spell%s above level %d (the first is %s at %d); the game clamps "
+		    "spell levels back to %d, so the extra levels will not survive",
+		    overcap, overcap == 1 ? " is" : "s are", hero_spell_max_level(),
+		    hero_spell_name(f, first_overcap),
+		    hero_get_spell_level(h, first_overcap), hero_spell_max_level());
+
+	if (first_nobook >= 0)
+		dl_add(dl, DIAG_WARNING, "spells",
+		    "%d spell%s in the spell book that cannot be learned from one (the "
+		    "first is %s, id %d). The game grants these through the class "
+		    "rather than the book and masks _pMemSpells down to book spells on "
+		    "load, so %s will disappear",
+		    nobook, nobook == 1 ? " is" : "s are",
+		    hero_spell_name(f, first_nobook), first_nobook,
+		    nobook == 1 ? "it" : "they");
+
+	if (first_orphan >= 0)
+		dl_add(dl, DIAG_WARNING, "spells",
+		    "%d spell%s a level but is not in the spell book (the first is %s, "
+		    "id %d); the character can cast %s from a staff or scroll but will "
+		    "not find %s in the book",
+		    orphan_lvl, orphan_lvl == 1 ? " has" : "s have",
+		    hero_spell_name(f, first_orphan), first_orphan,
+		    orphan_lvl == 1 ? "it" : "them", orphan_lvl == 1 ? "it" : "them");
+
+	/* pSplLvl2 is Hellfire's overflow; a Diablo save has no business using it. */
+	if (f != FLAVOR_HELLFIRE) {
+		for (int i = 0; i < 10; i++) {
+			if (h->pSplLvl2[i] == 0)
+				continue;
+			dl_add(dl, DIAG_ERROR, "spells",
+			    "the Hellfire spell area (pSplLvl2) holds data in a Diablo save; "
+			    "byte %d is %d and should be 0",
+			    i, h->pSplLvl2[i]);
 			break;
 		}
 	}

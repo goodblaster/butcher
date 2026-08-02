@@ -232,7 +232,7 @@ Properties the suite enforces, roughly in order of how badly a violation would h
 - **File permissions are preserved.** Found by running it: `mkstemp` creates at 0600 and `rename` carries that mode onto the target, silently stripping the save's permissions. Fixed with `fchmod` from the original's mode, and pinned by a test.
 - **Multiplayer saves are refused rather than converted.** `save_read_hero` now reports which password worked; `patch` refuses if it was the multiplayer one, since `save_write_hero` only writes single-player encoding and re-keying would break the save where it came from.
 
-`patch` writes `<save.sv>.bak` by default and **refuses if that file already exists** — so a second patch cannot destroy the pristine original.
+`patch` writes `<save.sv>.bak` by default and **never overwrites an existing backup** — so a second patch cannot destroy the pristine original. It falls back to `<save.sv>.bak.1`, `.bak.2`, ... instead. Refusing the write outright was the original behaviour and it was wrong: it protected the backup by throwing away the edit.
 
 **Still open:** same gap as before. `BUTCHER_SAVE=/path/to/single_0.sv make check` now also exercises the writer, on a *copy* — it rewrites the hero unchanged and asserts the result is byte-for-byte identical to the real archive. That is the strongest available evidence that the writer agrees with whatever wrote the save. The real save itself is never opened for writing.
 

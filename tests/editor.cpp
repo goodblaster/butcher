@@ -623,7 +623,7 @@ static void check_end_to_end(void)
 	h.pMaxHPBase = HERO_FROM_WHOLE(120);
 	h.pHPBase = HERO_FROM_WHOLE(120);
 	int sid = hero_find_spell(FLAVOR_DIABLO, "Fireball");
-	ok(hero_set_spell_level(&h, sid, 12, err), "set Fireball to level 12");
+	ok(hero_set_spell_level(&h, FLAVOR_DIABLO, sid, 12, err), "set Fireball to level 12");
 	ok(hero_set_gold(&h, 87654, err), "set gold to 87654");
 
 	char verr[HERO_ERR_LEN];
@@ -748,30 +748,45 @@ static void check_hellfire(void)
 	 * write into the wrong array and corrupt neighbouring fields.
 	 */
 	base_hero(&h, 3);
+	/*
+	 * It has to be one with a book, or there would be no book bit to check:
+	 * the first few Hellfire spells (Mana, the Magi, the Jester) are staff-only
+	 * and sBookLvl is -1 for them.
+	 */
 	int hi = -1;
 	for (int sp = MAX_SPELLS; sp < hero_spell_persisted(); sp++) {
-		if (hero_spell_name(FLAVOR_HELLFIRE, sp) != NULL) {
+		if (hero_spell_has_book(FLAVOR_HELLFIRE, sp)) {
 			hi = sp;
 			break;
 		}
 	}
-	okf(hi >= MAX_SPELLS, "found a spell in the pSplLvl2 range (id %d, %s)", hi,
+	okf(hi >= MAX_SPELLS, "found a book spell in the pSplLvl2 range (id %d, %s)", hi,
 	    hi > 0 ? hero_spell_name(FLAVOR_HELLFIRE, hi) : "?");
 	if (hi >= MAX_SPELLS) {
 		PkPlayerStruct before = h;
-		ok(hero_set_spell_level(&h, hi, 9, err), "set a pSplLvl2 spell");
+		ok(hero_set_spell_level(&h, FLAVOR_HELLFIRE, hi, 9, err), "set a pSplLvl2 spell");
 		ok(hero_get_spell_level(&h, hi) == 9, "reads back through pSplLvl2");
 		ok(h.pSplLvl2[hi - MAX_SPELLS] == 9, "landed in pSplLvl2, not pSplLvl");
 		ok(memcmp(h.pSplLvl, before.pSplLvl, MAX_SPELLS) == 0,
 		    "the pSplLvl array was not touched");
 		ok((h.pMemSpells & SPELLBIT(hi)) != 0, "spell book bit set");
-		ok(hero_set_spell_level(&h, hi, 0, err) && (h.pMemSpells & SPELLBIT(hi)) == 0,
+		ok(hero_set_spell_level(&h, FLAVOR_HELLFIRE, hi, 0, err) && (h.pMemSpells & SPELLBIT(hi)) == 0,
 		    "level 0 clears the book bit");
 	}
 
+	/* A staff-only spell gets a level but never a book bit. */
+	base_hero(&h, 3);
+	int staff_only = hero_find_spell(FLAVOR_HELLFIRE, "Mana");
+	okf(staff_only > 0 && !hero_spell_has_book(FLAVOR_HELLFIRE, staff_only),
+	    "Mana (id %d) is staff-only", staff_only);
+	ok(hero_set_spell_level(&h, FLAVOR_HELLFIRE, staff_only, 6, err),
+	    "it can still be given a level");
+	ok((h.pMemSpells & SPELLBIT(staff_only)) == 0,
+	    "  ...but is kept out of the spell book, which the game would mask anyway");
+
 	/* Ids 47..51 exist in Hellfire but no save can carry them. */
 	base_hero(&h, 3);
-	ok(!hero_set_spell_level(&h, hero_spell_persisted(), 5, err),
+	ok(!hero_set_spell_level(&h, FLAVOR_HELLFIRE, hero_spell_persisted(), 5, err),
 	    "a spell id beyond pSplLvl2 is refused rather than silently dropped");
 	printf("        %s\n", err);
 	ok(hero_spell_persisted() == 47, "ids 0..46 are the persistable range");
@@ -784,7 +799,7 @@ static void check_hellfire(void)
 	h.pBaseMag = 0;
 	h.plrlevel = 22;
 	if (hi >= MAX_SPELLS)
-		hero_set_spell_level(&h, hi, 4, err);
+		hero_set_spell_level(&h, FLAVOR_HELLFIRE, hi, 4, err);
 	ok(hero_validate(&h, FLAVOR_HELLFIRE, err), "a Barbarian validates");
 	if (!hero_validate(&h, FLAVOR_HELLFIRE, err))
 		printf("        %s\n", err);

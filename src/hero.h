@@ -87,14 +87,42 @@ int hero_find_spell(HeroFlavor f, const char *name);
 /** @return display name for a spell id, or NULL if it has none. */
 const char *hero_spell_name(HeroFlavor f, int spell);
 
+/**
+ * @return nonzero if @p spell is a real, castable spell in @p f.
+ *
+ * Diablo's spelldata[] has 37 entries and Hellfire's 52. An id past the end is
+ * not merely unknown -- the game indexes that table directly from the player's
+ * spell state (Source/control.cpp reads spelldata[j] while drawing the spell
+ * book), so a Hellfire id in a Diablo save makes it read past the array.
+ */
+int hero_spell_exists(HeroFlavor f, int spell);
+
+/**
+ * @return nonzero if @p spell can be learned from a book.
+ *
+ * spelldata[].sBookLvl is -1 for the ones that have no book: the class skills
+ * (Repair, Disarm, Recharge, ...) and Identify. The game grants those through
+ * _pAblSpells from the class, never through _pMemSpells.
+ */
+int hero_spell_has_book(HeroFlavor f, int spell);
+
+/**
+ * The highest spell level the game itself will produce.
+ *
+ * Books stop raising a spell at 15 (Source/items.cpp), so anything above that
+ * is reachable only by editing.
+ */
+int hero_spell_max_level(void);
+
 /** Read a spell level, routing ids 37..46 to pSplLvl2. */
 int hero_get_spell_level(const PkPlayerStruct *h, int spell);
 
 /**
  * Set a spell level and its spell-book bit, routing ids 37..46 to pSplLvl2.
- * Refuses ids that a save cannot carry.
+ * Refuses ids that a save cannot carry or that @p f does not define.
  */
-int hero_set_spell_level(PkPlayerStruct *h, int spell, int level, char *err);
+int hero_set_spell_level(PkPlayerStruct *h, HeroFlavor f, int spell, int level,
+    char *err);
 
 /* ---- gold ---- */
 
@@ -133,6 +161,13 @@ int hero_name_valid(const char *name, char *err);
  * which nothing else checks.
  */
 void hero_check(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl);
+
+/**
+ * The spell half of hero_check, exposed so it can be exercised on its own.
+ *
+ * Called by hero_check; there is no need to call both.
+ */
+void hero_check_spells(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl);
 
 /**
  * Convenience wrapper over hero_check for callers that only need a verdict.

@@ -27,6 +27,11 @@ CXX ?= c++
 CXXFLAGS ?= -O2 -g
 CXXFLAGS += -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 
+# Record each object's header dependencies so editing a header rebuilds what
+# includes it. Without this, changing a signature in a header left stale
+# objects behind and the failure surfaced as a confusing link error.
+CXXFLAGS += -MMD -MP
+
 BUILD := build
 
 
@@ -222,3 +227,6 @@ clean:
 	@rm -rf $(BUILD)
 
 .PHONY: all check clean install uninstall
+
+# Written by -MMD above. Absent on a clean tree, hence the leading dash.
+-include $(wildcard $(BUILD)/*.d $(BUILD)/ftxui/*.d)

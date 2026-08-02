@@ -41,11 +41,24 @@ int save_scan_default(SaveEntry *out, int max, char *used_dir);
 /** Infer Diablo or Hellfire from a path's extension. */
 HeroFlavor save_flavor_of(const char *path);
 
+/** How many numbered fallbacks save_backup will try after `<path>.bak`. */
+#define SAVE_BACKUP_TRIES 99
+
 /**
- * Copy @p path to `<path>.bak`, refusing if that already exists so a second
- * edit cannot destroy the pristine copy.
+ * Copy @p path to `<path>.bak`, or to `<path>.bak.1`, `.bak.2`, ... when
+ * earlier names are taken.
+ *
+ * An existing backup is never overwritten -- the first one is the most
+ * pristine copy and the one worth keeping. Earlier versions refused to write
+ * at all once `.bak` existed, which cost the edit rather than the backup.
  */
 int save_backup(const char *path, char *err);
+
+/**
+ * As save_backup, but reports the name it settled on in @p chosen so the
+ * caller can tell the user where the copy went.
+ */
+int save_backup_to(const char *path, char *chosen, size_t chosen_len, char *err);
 
 /**
  * Back up (optionally), write, then read back and compare.

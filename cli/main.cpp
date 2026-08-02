@@ -193,9 +193,8 @@ static int commit(const char *path, const PkPlayerStruct *h, HeroFlavor f, int b
 	char err[MPQ_ERR_LEN] = { 0 };
 
 	if (backup) {
-		char bak[2048];
-		snprintf(bak, sizeof(bak), "%s.bak", path);
-		if (!save_backup(path, err)) {
+		char bak[SAVE_PATH_MAX];
+		if (!save_backup_to(path, bak, sizeof(bak), err)) {
 			fprintf(stderr, "butcher: %s\n", err);
 			return 1;
 		}
@@ -360,11 +359,19 @@ static int cmd_set(int argc, char **argv)
 			memcpy(sname, v, l);
 			sname[l] = '\0';
 
-			int sid = hero_find_spell(flavor, sname);
-			if (sid < 0) {
-				fprintf(stderr, "--spell: unknown %s spell \"%s\"\n",
-				    hero_flavor_name(flavor), sname);
-				return 2;
+			/*
+			 * A bare number is accepted as a raw id. Names only resolve for
+			 * spells this game defines, so a save that somehow holds a foreign
+			 * id could not otherwise be repaired.
+			 */
+			int sid;
+			if (!parse_int(sname, &sid)) {
+				sid = hero_find_spell(flavor, sname);
+				if (sid < 0) {
+					fprintf(stderr, "--spell: unknown %s spell \"%s\"\n",
+					    hero_flavor_name(flavor), sname);
+					return 2;
+				}
 			}
 			int lvl;
 			if (!parse_int(eq + 1, &lvl)) {
@@ -385,7 +392,8 @@ static int cmd_set(int argc, char **argv)
 
 	for (int i = 0; i < nspells; i++) {
 		char serr[HERO_ERR_LEN];
-		if (!hero_set_spell_level(&h, spells[i].spell, spells[i].level, serr)) {
+		if (!hero_set_spell_level(&h, flavor, spells[i].spell, spells[i].level,
+		        serr)) {
 			fprintf(stderr, "--spell: %s\n", serr);
 			return 2;
 		}
@@ -956,11 +964,13 @@ static int usage(void)
 	    "        --statpts N   --str N       --mag N       --dex N\n"
 	    "        --vit N       --hp N        --maxhp N     --mana N\n"
 	    "        --maxmana N   --gold N      --dlvl N\n"
-	    "        --spell NAME=LEVEL          (repeatable; level 0 forgets it)\n"
+	    "        --spell NAME=LEVEL          (repeatable; level 0 forgets it.\n"
+"                                    NAME may also be a numeric id, which\n"
+"                                    is how a foreign id gets cleared)\n"
 	    "        --dry-run     show the diff and stop\n"
 	    "        --force       write even if a value is out of range\n"
 	    "        --raw         hp/mana values are raw fixed point, not whole\n"
-	    "        --no-backup   skip writing <save.sv>.bak\n"
+	    "        --no-backup   skip the <save.sv>.bak copy\n"
 	    "\n"
 	    "  --hellfire / --diablo   override the format guessed from the\n"
 	    "        extension (.hsv is Hellfire, .sv is Diablo). Applies to any\n"

@@ -455,6 +455,127 @@ static void check_hero_all(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 5b. Spells                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * From a real defect: a Warrior edited in the TUI stopped appearing in the
+ * game's character list. The save had a book bit for spell id 37, which is
+ * Hellfire's Mana Shield -- Diablo's spelldata[] stops at 36, and the game
+ * indexes that table straight off _pMemSpells while drawing the spell book.
+ *
+ * The rules checked here are the ones the game applies to itself in
+ * Source/player.cpp: _pMemSpells holds only spells whose sBookLvl is not -1,
+ * and levels are clamped to MAX_SPELL_LEVEL.
+ */
+static void check_spells(void)
+{
+	section("5b. spells the game cannot survive");
+
+	PkPlayerStruct h;
+	DiagList dl;
+
+	/* A Hellfire id in a Diablo save reads past the end of spelldata[]. */
+	base_hero(&h, PC_WARRIOR);
+	h.pMemSpells |= SPELLBIT(37);
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) > 0, "a Hellfire spell id in a Diablo save is an error");
+	ok(mentions(&dl, "read past the end"), "  ...and says why it matters");
+	ok(located_at(&dl, "spells"), "  ...located at \"spells\"");
+	dl_free(&dl);
+
+	/* The same id is fine in a Hellfire save. */
+	base_hero(&h, PC_WARRIOR);
+	h.pMemSpells |= SPELLBIT(37);
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_HELLFIRE, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0, "the same id is legal in a Hellfire save");
+	dl_free(&dl);
+
+	/* Diablo has no business writing Hellfire's overflow array. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl2[0] = 3;
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) > 0 && mentions(&dl, "pSplLvl2"),
+	    "data in the Hellfire spell area of a Diablo save is an error");
+	dl_free(&dl);
+
+	/* A spell with no book cannot sit in the book. */
+	int identify = hero_find_spell(FLAVOR_DIABLO, "Identify");
+	okf(identify > 0, "Identify is id %d", identify);
+	ok(!hero_spell_has_book(FLAVOR_DIABLO, identify), "  ...and has no book");
+	base_hero(&h, PC_WARRIOR);
+	h.pMemSpells |= SPELLBIT(identify);
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0 && dl_count(&dl, DIAG_WARNING) > 0,
+	    "a book bit for a spell with no book is a warning, not an error");
+	ok(mentions(&dl, "will disappear"), "  ...and says the game will drop it");
+	dl_free(&dl);
+
+	/* Above the game's own clamp. */
+	int firebolt = hero_find_spell(FLAVOR_DIABLO, "Firebolt");
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl[firebolt] = 40;
+	h.pMemSpells |= SPELLBIT(firebolt);
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_WARNING) > 0 && mentions(&dl, "clamps"),
+	    "a spell level above 15 warns that the game clamps it");
+	dl_free(&dl);
+
+	/* Negative levels are not reachable in play. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl[firebolt] = -3;
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) > 0, "a negative spell level is an error");
+	dl_free(&dl);
+
+	/* A level with no book bit is legal but worth saying. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl[firebolt] = 5;
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0 && dl_count(&dl, DIAG_WARNING) > 0,
+	    "a spell level without a book bit is a warning");
+	dl_free(&dl);
+
+	/* A properly learned spell is silent. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl[firebolt] = 5;
+	h.pMemSpells |= SPELLBIT(firebolt);
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0 && dl_count(&dl, DIAG_WARNING) == 0,
+	    "a spell learned properly produces no findings");
+	dl_free(&dl);
+
+	/* hero_set_spell_level refuses at the point of edit, not just on read. */
+	char err[HERO_ERR_LEN];
+	base_hero(&h, PC_WARRIOR);
+	ok(!hero_set_spell_level(&h, FLAVOR_DIABLO, 37, 1, err),
+	    "setting a Hellfire spell on a Diablo character is refused");
+	ok(hero_set_spell_level(&h, FLAVOR_HELLFIRE, 37, 1, err),
+	    "  ...and accepted on a Hellfire one");
+	ok(!hero_set_spell_level(&h, FLAVOR_DIABLO, firebolt, 40, err),
+	    "a level above the game's cap is refused");
+
+	/* Setting a level on a bookless spell must not invent a book bit. */
+	base_hero(&h, PC_WARRIOR);
+	ok(hero_set_spell_level(&h, FLAVOR_DIABLO, identify, 4, err),
+	    "a bookless spell can still be given a level");
+	ok((h.pMemSpells & SPELLBIT(identify)) == 0,
+	    "  ...without being put in the spell book");
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0, "  ...and the result has no errors");
+	dl_free(&dl);
+}
+
+/* ------------------------------------------------------------------ */
 /* 6. Suggestion quality                                               */
 /* ------------------------------------------------------------------ */
 
@@ -700,6 +821,7 @@ int main(void)
 	check_ranges();
 	check_structure();
 	check_hero_all();
+	check_spells();
 	check_suggestions();
 	check_input_kinds();
 	check_real_save();

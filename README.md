@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 487 tests.
+package manager. `make check` builds the tool and runs 527 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -180,8 +180,9 @@ butcher set single_0.hsv --level 30 --gold 25000
 
 Options: `--name --class --level --exp --statpts --str --mag --dex --vit
 --hp --maxhp --mana --maxmana --gold --dlvl`, plus `--spell NAME=LEVEL`
-(repeatable; level 0 forgets it). Modifiers: `--dry-run`, `--force`, `--raw`,
-`--no-backup`.
+(repeatable; level 0 forgets it — `NAME` may also be a numeric id, which is
+how you clear one the save should not be carrying). Modifiers: `--dry-run`,
+`--force`, `--raw`, `--no-backup`.
 
 ### JSON
 
@@ -265,6 +266,22 @@ and a create-info word; the game regenerates the item by replaying its own
 generator. There is no "+3 fire damage" field to change. Items are shown and
 round-tripped faithfully, never synthesized.
 
+**Spell ids are not interchangeable between the two games.** Diablo's spell
+table has 37 rows and Hellfire's 52, and the game indexes that table *directly*
+from the character's spell fields while drawing the spell book. A Hellfire id
+in a Diablo save is therefore not a spell the game ignores — it is a read past
+the end of an array, and the character may simply stop appearing in the
+character list. butcher refuses to write one, and `validate` reports it as an
+error. Clearing one is always allowed, so a save that already has the problem
+can be repaired: `butcher set <save> --spell 37=0`.
+
+**Not every spell can be in the spell book.** `sBookLvl` is -1 for the class
+skills — Repair, Disarm, Recharge, Search — and for staff-only spells like
+Mana and the Jester. The game grants those through the class and masks its
+spell-book field down to book spells every time it loads a character, so a bit
+set for one of them disappears on the next load. butcher will give them a level
+but keeps them out of the book.
+
 ## Safety
 
 - Reads open the file read-only. The game truncates a save it does not
@@ -272,12 +289,15 @@ round-tripped faithfully, never synthesized.
 - Writes go to a temporary file which is re-opened, read back, and compared
   before it replaces the original. Anything that fails verification leaves the
   save untouched.
-- `set`, `import` and `patch` write `<save>.bak` first and **refuse if one
-  already exists**, so a second edit cannot overwrite your pristine copy.
+- `set`, `import` and `patch` write a backup first. The first one is
+  `<save>.bak`; later edits go to `<save>.bak.1`, `.bak.2`, and so on. An
+  existing backup is **never overwritten**, so `<save>.bak` always holds the
+  oldest copy — the one furthest from whatever you just broke.
 - File permissions are preserved.
 - Multiplayer-keyed heroes are refused rather than silently re-encoded.
 
-To restore: `cp single_0.sv.bak single_0.sv`.
+To restore: `cp single_0.sv.bak single_0.sv`. Every write names the backup it
+made, so check that line if you want a more recent one.
 
 ## Diablo and Hellfire
 
@@ -299,7 +319,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 487 checks |
+| `tests/` | Nine suites, 527 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

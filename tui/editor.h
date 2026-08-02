@@ -152,10 +152,26 @@ struct Editor {
 		if (level_target != level_opened)
 			h.pExperience = hero_exp_for_level(level_target);
 
+		/*
+		 * Only spells this save's game defines. The pane is built once and
+		 * covers both flavors, so without this a Diablo character picks up
+		 * Hellfire ids that the game would read past the end of its spell
+		 * table -- which is what made an edited character unloadable.
+		 */
 		for (int s = 1; s < hero_spell_persisted(); s++) {
 			char err[HERO_ERR_LEN];
-			hero_set_spell_level(&h, s, spell_lvl[s], err);
-			if (spell_known[s])
+			if (!hero_spell_exists(entry.flavor, s)) {
+				if (s < MAX_SPELLS)
+					h.pSplLvl[s] = 0;
+				else
+					h.pSplLvl2[s - MAX_SPELLS] = 0;
+				h.pMemSpells &= ~SPELLBIT(s);
+				continue;
+			}
+			hero_set_spell_level(&h, entry.flavor, s, spell_lvl[s], err);
+			/* A spell with no book cannot sit in _pMemSpells; the game masks
+			 * it straight back out. */
+			if (spell_known[s] && hero_spell_has_book(entry.flavor, s))
 				h.pMemSpells |= SPELLBIT(s);
 			else
 				h.pMemSpells &= ~SPELLBIT(s);

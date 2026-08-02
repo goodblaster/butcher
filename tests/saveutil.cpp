@@ -242,22 +242,55 @@ static void check_backup(void)
 	char bak[SAVE_PATH_MAX];
 	snprintf(bak, sizeof(bak), "%s.bak", save);
 	remove(bak);
+	for (int i = 1; i <= 3; i++) {
+		char n[SAVE_PATH_MAX];
+		snprintf(n, sizeof(n), "%s.bak.%d", save, i);
+		remove(n);
+	}
 
 	uint64_t before = file_hash(save);
 	char err[MPQ_ERR_LEN] = { 0 };
 
-	ok(save_backup(save, err), "first backup is written");
+	char chosen[SAVE_PATH_MAX] = { 0 };
+	ok(save_backup_to(save, chosen, sizeof(chosen), err), "first backup is written");
 	ok(exists(bak), "the .bak file exists");
 	ok(file_hash(bak) == before, "and is a faithful copy");
+	ok(strcmp(chosen, bak) == 0, "and its name is reported back");
 
 	/*
-	 * The second backup must refuse. Overwriting would replace the pristine
-	 * original with an already-edited one -- exactly when you need it most.
+	 * A second backup must not overwrite the first: that one is the pristine
+	 * original, and replacing it with an already-edited copy destroys the very
+	 * thing being kept. But refusing outright cost the user their edit, so it
+	 * takes the next free name instead.
 	 */
+	base_hero(&h, "Edited", PC_WARRIOR);
+	make_save(save, &h);
+	uint64_t edited = file_hash(save);
+	ok(edited != before, "the save has since changed");
+
 	err[0] = '\0';
-	ok(!save_backup(save, err), "a second backup refuses rather than overwrite");
-	printf("        %s\n", err);
-	ok(file_hash(bak) == before, "the original backup is untouched");
+	chosen[0] = '\0';
+	ok(save_backup_to(save, chosen, sizeof(chosen), err),
+	    "a second backup succeeds rather than failing the save");
+	ok(file_hash(bak) == before, "the original .bak is untouched");
+
+	char bak1[SAVE_PATH_MAX];
+	snprintf(bak1, sizeof(bak1), "%s.bak.1", save);
+	ok(strcmp(chosen, bak1) == 0, "it fell back to .bak.1");
+	ok(file_hash(bak1) == edited, "which holds the current contents");
+
+	/* And keeps counting. */
+	chosen[0] = '\0';
+	ok(save_backup_to(save, chosen, sizeof(chosen), err), "a third backup too");
+	char bak2[SAVE_PATH_MAX];
+	snprintf(bak2, sizeof(bak2), "%s.bak.2", save);
+	ok(strcmp(chosen, bak2) == 0, "landing on .bak.2");
+	ok(file_hash(bak) == before && file_hash(bak1) == edited,
+	    "with every earlier backup still intact");
+
+	/* The plain wrapper still works and still never overwrites. */
+	ok(save_backup(save, err), "save_backup picks a free name without reporting it");
+	ok(file_hash(bak) == before, "and leaves .bak alone");
 }
 
 /* ------------------------------------------------------------------ */
@@ -274,9 +307,11 @@ static void check_commit(void)
 	make_save(save, &h);
 
 	char err[MPQ_ERR_LEN] = { 0 };
-	char bak[SAVE_PATH_MAX];
+	char bak[SAVE_PATH_MAX], bak1[SAVE_PATH_MAX];
 	snprintf(bak, sizeof(bak), "%s.bak", save);
+	snprintf(bak1, sizeof(bak1), "%s.bak.1", save);
 	remove(bak);
+	remove(bak1);
 
 	PkPlayerStruct edited = h;
 	edited.pBaseStr = 99;
@@ -284,24 +319,32 @@ static void check_commit(void)
 
 	ok(save_commit(save, &edited, /*backup=*/1, err), "commit with a backup");
 	ok(exists(bak), "the backup was written");
+	uint64_t pristine = file_hash(bak);
 
 	PkPlayerStruct back;
 	ok(save_read_hero(save, &back, NULL, err), "the save reads back");
 	ok(back.pBaseStr == 99, "the edit landed");
 	ok(memcmp(&back, &edited, sizeof(back)) == 0, "the whole character matches");
 
-	/* A second commit must not clobber the first backup. */
+	/*
+	 * A second commit must not clobber the first backup -- but it must still
+	 * go through. Failing the write to protect the backup lost the edit, which
+	 * is the worse of the two.
+	 */
 	edited.pBaseStr = 100;
 	err[0] = '\0';
-	ok(!save_commit(save, &edited, /*backup=*/1, err),
-	    "a second backed-up commit refuses, protecting the pristine copy");
-	ok(save_read_hero(save, &back, NULL, err) && back.pBaseStr == 99,
-	    "  ...and the save is left as it was");
-
-	/* Without a backup it proceeds. */
-	ok(save_commit(save, &edited, /*backup=*/0, err), "commit without a backup");
+	ok(save_commit(save, &edited, /*backup=*/1, err),
+	    "a second backed-up commit succeeds");
+	ok(file_hash(bak) == pristine, "  ...leaving the pristine .bak untouched");
+	ok(exists(bak1), "  ...and putting the newer copy in .bak.1");
 	ok(save_read_hero(save, &back, NULL, err) && back.pBaseStr == 100,
-	    "the second edit landed");
+	    "  ...and the edit landed");
+
+	/* Without a backup it proceeds too. */
+	edited.pBaseStr = 101;
+	ok(save_commit(save, &edited, /*backup=*/0, err), "commit without a backup");
+	ok(save_read_hero(save, &back, NULL, err) && back.pBaseStr == 101,
+	    "the third edit landed");
 
 	/* Committing to something that is not a save must fail and change nothing. */
 	const char *bogus = tmppath("bogus.sv");

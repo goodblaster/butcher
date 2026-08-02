@@ -44,6 +44,13 @@ std::string Pad(const std::string &s, size_t n)
 	return s.size() >= n ? s : s + std::string(n - s.size(), ' ');
 }
 
+/** The last path component -- status lines have no room for a full path. */
+std::string Leaf(const std::string &path)
+{
+	size_t slash = path.find_last_of('/');
+	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 std::string Commas(long long v)
 {
 	std::string d = std::to_string(v < 0 ? -v : v);
@@ -454,8 +461,10 @@ int tui_main(int argc, char **argv)
 	/* ---- spells pane ---- */
 	/*
 	 * Every id either game names, so the component set is fixed for the life
-	 * of the program. Rows the current flavour does not define are hidden at
-	 * render time rather than rebuilt.
+	 * of the program. Rows the current flavour does not define are wrapped in
+	 * Maybe so they are skipped for focus as well as hidden -- hiding them at
+	 * render time alone left them reachable, which is how a Hellfire spell got
+	 * toggled into a Diablo save and made the character unloadable.
 	 */
 	std::vector<int> spell_ids;
 	for (int s = 1; s < hero_spell_persisted(); s++)
@@ -481,13 +490,17 @@ int tui_main(int argc, char **argv)
 		opt.color_inactive = Color::GrayLight; /* legible when not focused */
 		auto row = CatchEvent(Slider(opt), [&ed, s](Event e) {
 			if (e == Event::Character(' ') || e == Event::Return) {
-				ed.spell_known[s] = !ed.spell_known[s];
+				/* Spells with no book are granted by the class; the game masks
+				 * them straight back out of _pMemSpells. */
+				if (hero_spell_has_book(ed.entry.flavor, s))
+					ed.spell_known[s] = !ed.spell_known[s];
 				return true;
 			}
 			return false;
 		});
 		spell_sliders.push_back(row);
-		spell_controls->Add(row);
+		spell_controls->Add(
+		    Maybe(row, [&ed, s] { return hero_spell_exists(ed.entry.flavor, s) != 0; }));
 	}
 
 	auto spells_pane = Renderer(spell_controls, [&] {
@@ -502,15 +515,18 @@ int tui_main(int argc, char **argv)
 		rows.push_back(separator());
 		for (size_t i = 0; i < spell_ids.size(); i++) {
 			int s = spell_ids[i];
-			const char *nm = hero_spell_name(ed.entry.flavor, s);
-			if (nm == nullptr)
+			if (!hero_spell_exists(ed.entry.flavor, s))
 				continue; /* not a spell in this game */
+			const char *nm = hero_spell_name(ed.entry.flavor, s);
+			bool book = hero_spell_has_book(ed.entry.flavor, s) != 0;
 			bool active = ed.spell_known[s] || ed.spell_lvl[s] > 0;
 			bool here = spell_sliders[i]->Focused();
+			/* A class skill has no book, so it gets no checkbox to toggle. */
+			Element mark = book ? text(ed.spell_known[s] ? "▣" : "☐")
+			        | color(ed.spell_known[s] ? Color::Green : Color::GrayDark)
+			                    : text("·") | color(Color::GrayDark);
 			Element row = hbox({
-			                  text(ed.spell_known[s] ? "▣" : "☐")
-			                      | color(ed.spell_known[s] ? Color::Green
-			                                                : Color::GrayDark),
+			                  mark,
 			                  text(" " + Pad(nm ? nm : "?", 18)),
 			                  text(Pad(std::to_string(ed.spell_lvl[s]), 4)),
 			                  spell_sliders[i]->Render() | flex,
@@ -657,12 +673,21 @@ int tui_main(int argc, char **argv)
 					status_color = Color::Red;
 				} else {
 					char werr[MPQ_ERR_LEN];
-					if (save_commit(ed.entry.path, &h, backup ? 1 : 0, werr)) {
+					char bak[SAVE_PATH_MAX] = { 0 };
+					bool ok = true;
+					if (backup)
+						ok = save_backup_to(ed.entry.path, bak, sizeof(bak), werr) != 0;
+					if (ok)
+						ok = save_commit(ed.entry.path, &h, /*backup=*/0, werr) != 0;
+					if (ok) {
 						ed.original = h;
 						ed.level_opened = ed.level_target;
 						ed.level_stored = h.pLevel;
 						ed.gold_opened = ed.gold;
-						status = backup ? "saved (backup written)" : "saved";
+						/* Name the backup: it is not always <save>.bak, and the
+						 * user needs to know which file to restore from. */
+						status = backup ? std::string("saved -- backup ") + Leaf(bak)
+						                : std::string("saved");
 						status_color = Color::Green;
 					} else {
 						status = std::string("failed: ") + werr;

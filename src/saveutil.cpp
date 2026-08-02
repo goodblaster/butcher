@@ -111,23 +111,49 @@ int save_scan_default(SaveEntry *out, int max, char *used_dir)
 
 int save_backup(const char *path, char *err)
 {
+	return save_backup_to(path, NULL, 0, err);
+}
+
+int save_backup_to(const char *path, char *chosen, size_t chosen_len, char *err)
+{
 	char bak[SAVE_PATH_MAX];
-	snprintf(bak, sizeof(bak), "%s.bak", path);
 
 	FILE *in = fopen(path, "rb");
 	if (in == NULL) {
 		seterr(err, "cannot read %s", path);
 		return 0;
 	}
-	/* "x" fails when the file exists, so an existing backup is never lost. */
-	FILE *out = fopen(bak, "wbx");
+
+	/*
+	 * "x" fails when the file exists, so an existing backup is never
+	 * overwritten -- but refusing outright meant losing the edit instead. Fall
+	 * back to .bak.1, .bak.2, ... so the older copy stays put and the save
+	 * still proceeds.
+	 */
+	FILE *out = NULL;
+	for (int i = 0; i <= SAVE_BACKUP_TRIES; i++) {
+		if (i == 0)
+			snprintf(bak, sizeof(bak), "%s.bak", path);
+		else
+			snprintf(bak, sizeof(bak), "%s.bak.%d", path, i);
+		out = fopen(bak, "wbx");
+		if (out != NULL)
+			break;
+		if (errno != EEXIST) {
+			fclose(in);
+			seterr(err, "cannot create %s: %s", bak, strerror(errno));
+			return 0;
+		}
+	}
 	if (out == NULL) {
 		fclose(in);
-		seterr(err, "cannot create %s (it may already exist). Move it aside, "
-		            "or save without a backup.",
-		    bak);
+		seterr(err, "%s.bak and %s.bak.1 through .%d all exist; remove some of "
+		            "them, or save without a backup",
+		    path, path, SAVE_BACKUP_TRIES);
 		return 0;
 	}
+	if (chosen != NULL)
+		snprintf(chosen, chosen_len, "%s", bak);
 
 	char buf[8192];
 	size_t n;
