@@ -21,6 +21,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace ftxui;
 
@@ -137,6 +138,80 @@ int main(void)
 
 		box->OnEvent(Event::ArrowLeft);
 		ok(cursor == 0, "ArrowLeft still moves the caret");
+	}
+
+	/* ---------------------------------------------------------------- */
+	section("4. switching tabs leaves focus somewhere usable");
+
+	/*
+	 * From a bug report: after tabbing between panes, Attributes was showing
+	 * but arrows changed nothing. A pane with no focusable content -- the
+	 * read-only Inventory -- made the whole tab body unfocusable, so an arrow
+	 * press there moved focus up to the tab bar and the panes were left with
+	 * nothing focused.
+	 */
+	{
+		int va = 10, vb = 20;
+		static int cap = 100;
+		auto sa = Slider(SliderOption<int> { &va, 0, &cap, 1 });
+		auto sb = Slider(SliderOption<int> { &vb, 0, &cap, 1 });
+		auto attrs = Container::Vertical({ sa, sb });
+		auto attrs_pane = Renderer(attrs, [] { return text("attrs"); });
+
+		int vc = 5;
+		auto sc = Slider(SliderOption<int> { &vc, 0, &cap, 1 });
+		auto spells = Container::Vertical({ sc });
+		auto spells_pane = Renderer(spells, [] { return text("spells"); });
+
+		/* Focusable, as the real one now is. */
+		auto inv_pane = Renderer([](bool) { return text("inv"); });
+
+		int tab_index = 0, tab_cursor = 0;
+		std::vector<std::string> names { "Attributes", "Spells", "Inventory" };
+		MenuOption mo = MenuOption::Toggle();
+		mo.entries = &names;
+		mo.selected = &tab_index;
+		mo.focused_entry = &tab_cursor;
+		auto tab_bar = Menu(mo);
+		auto tab_body = Container::Tab({ attrs_pane, spells_pane, inv_pane }, &tab_index);
+		auto sheet = Container::Vertical({ tab_bar, tab_body });
+
+		ok(tab_body->Focusable(), "the tab body is focusable on Attributes");
+		tab_index = 2;
+		ok(tab_body->Focusable(),
+		    "  ...and still is on Inventory, which holds no controls");
+
+		/* The switch itself, as the app performs it. */
+		auto switch_to = [&](int want) {
+			bool in_pane = tab_body->Focused();
+			tab_index = want;
+			tab_cursor = want;
+			sheet->SetActiveChild(in_pane ? tab_body.get() : tab_bar.get());
+		};
+
+		tab_index = 0;
+		tab_cursor = 0;
+		sheet->SetActiveChild(tab_bar.get());
+		sheet->OnEvent(Event::ArrowDown); /* into the pane */
+		ok(sa->Focused(), "Down from the tab bar enters Attributes");
+
+		switch_to(1);
+		ok(sc->Focused(), "tabbing to Spells carries focus into it");
+		switch_to(2);
+		switch_to(0);
+		ok(sa->Focused() || sb->Focused(),
+		    "tabbing back through Inventory to Attributes leaves a field focused");
+
+		int before = va + vb;
+		sheet->OnEvent(Event::ArrowRight);
+		ok(va + vb != before, "  ...and arrows change it");
+
+		/* Starting on the tab bar, tabbing must not drag focus into a pane --
+		 * the sheet opens there so Right switches panes immediately. */
+		sheet->SetActiveChild(tab_bar.get());
+		switch_to(1);
+		ok(!sc->Focused() && tab_bar->Focused(),
+		    "tabbing from the bar keeps focus on the bar");
 	}
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

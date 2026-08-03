@@ -576,7 +576,13 @@ int tui_main(int argc, char **argv)
 	});
 
 	/* ---- inventory pane (read only) ---- */
-	auto inventory_pane = Renderer([&] {
+	/*
+	 * Focusable even though it holds no controls. A Renderer with no children
+	 * is not, which made the whole tab body unfocusable while Inventory was
+	 * selected -- so an arrow press there moved focus up to the tab bar and
+	 * left the panes with nothing focused.
+	 */
+	auto inventory_pane = Renderer([&](bool) {
 		PkPlayerStruct h = ed.Compose();
 		std::vector<Element> left;
 		left.push_back(text(" Equipped") | bold);
@@ -645,23 +651,21 @@ int tui_main(int argc, char **argv)
 		bool dirty = memcmp(&h, &ed.original, sizeof(h)) != 0;
 
 		Element body = vbox({
+		    /*
+		     * The in-progress marker rides on the header rather than taking a
+		     * row of its own: a whole line costs more than it is worth, and on
+		     * a short terminal it pushed Level and Experience out of view.
+		     */
 		    hbox({
 		        text(" " + ed.name + " ") | bold,
 		        filler(),
+		        ed.entry.in_progress ? text("game in progress  ") | color(Color::Cyan)
+		                             : text(""),
 		        text(std::string(hero_flavor_name(ed.entry.flavor)) + " "
 		            + hero_class_name(ed.entry.flavor, ed.cls) + " ")
 		            | dim,
 		    }),
 		    text(std::string(" ") + ed.entry.path) | dim,
-		    /*
-		     * A game in progress means the character is stored twice and saving
-		     * rewrites both. Worth stating, because it explains why writing
-		     * touches far more of the file than this sheet shows.
-		     */
-		    ed.entry.in_progress
-		        ? hbox({ text(" game in progress -- edits are applied to it as well ")
-		                     | color(Color::Black) | bgcolor(Color::Cyan) })
-		        : text(""),
 		    separator(),
 		    tab_bar->Render(),
 		    separator(),
@@ -783,9 +787,18 @@ int tui_main(int argc, char **argv)
 
 		/* Tab cycles panes; the bar's cursor has to follow the selection. */
 		if (e == Event::Tab || e == Event::TabReverse) {
+			/*
+			 * Where focus ends up has to be decided here, not left to whatever
+			 * it happened to be. Changing the index alone could leave focus on
+			 * a pane that is no longer shown, or nowhere at all -- and then
+			 * arrows did nothing until you found your way back by hand.
+			 */
+			bool was_in_pane = tab_body->Focused();
 			int n = (int)tab_names.size();
 			tab_index = (tab_index + (e == Event::Tab ? 1 : n - 1)) % n;
 			tab_cursor = tab_index;
+			sheet_container->SetActiveChild(
+			    was_in_pane ? tab_body.get() : tab_bar.get());
 			return true;
 		}
 
