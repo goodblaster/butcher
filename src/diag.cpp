@@ -57,13 +57,15 @@ int dl_report(const DiagList *dl, const char *source, void *stream)
 	int warnings = dl_count(dl, DIAG_WARNING);
 
 	/* Errors first: they are what stops the import. */
-	for (int pass = 0; pass < 2; pass++) {
-		DiagLevel want = pass == 0 ? DIAG_ERROR : DIAG_WARNING;
+	static const DiagLevel order[] = { DIAG_ERROR, DIAG_WARNING, DIAG_NOTE };
+	static const char *const labels[] = { "error", "warning", "fixed" };
+	for (int pass = 0; pass < 3; pass++) {
+		DiagLevel want = order[pass];
 		for (int i = 0; i < dl->n; i++) {
 			const Diag *d = &dl->items[i];
 			if (d->level != want)
 				continue;
-			const char *label = want == DIAG_ERROR ? "error" : "warning";
+			const char *label = labels[pass];
 			if (source != NULL && d->where[0] != '\0')
 				fprintf(out, "%s:%s: %s: %s\n", source, d->where, label, d->msg);
 			else if (d->where[0] != '\0')
@@ -77,6 +79,7 @@ int dl_report(const DiagList *dl, const char *source, void *stream)
 
 	if (errors == 0 && warnings == 0)
 		return 0;
+
 
 	fprintf(out, "\n%d error%s, %d warning%s\n", errors, errors == 1 ? "" : "s",
 	    warnings, warnings == 1 ? "" : "s");

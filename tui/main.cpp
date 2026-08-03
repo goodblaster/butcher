@@ -198,12 +198,16 @@ int tui_main(int argc, char **argv)
 			arg = argv[i];
 	}
 
+	/* A named save opens directly; anything that scans a directory picks. */
+	int named_one = 0;
+
 	if (arg != nullptr) {
 		struct stat st;
 		if (stat(arg, &st) == 0 && S_ISDIR(st.st_mode)) {
 			nsaves = save_scan_dir(arg, saves.data(), SAVE_MAX_SLOTS);
 			snprintf(used_dir, sizeof(used_dir), "%s", arg);
 		} else {
+			named_one = 1;
 			PkPlayerStruct h;
 			char err[MPQ_ERR_LEN];
 			if (!save_read_hero(arg, &h, nullptr, err)) {
@@ -268,7 +272,13 @@ int tui_main(int argc, char **argv)
 
 	/* ---- shared state ---- */
 	Editor ed;
-	int screen_index = (nsaves == 1 || arg != nullptr) ? 1 : 0; /* 0 picker, 1 sheet */
+	/*
+	 * 0 picker, 1 sheet. Only naming a save file opens it directly. Pointing
+	 * at a directory means "show me what is here" -- jumping into whichever
+	 * character happened to sort first is the tool choosing for you, and with
+	 * one save in the folder it is not even obvious that it chose.
+	 */
+	int screen_index = named_one ? 1 : 0;
 	int picked = 0;
 	int tab_index = 0;
 	bool name_was_focused = false;
@@ -488,12 +498,24 @@ int tui_main(int argc, char **argv)
 		SliderOption<int> opt { &ed.spell_lvl[s], 0, &cap_spell, 1 };
 		opt.color_active = Color::Cyan;
 		opt.color_inactive = Color::GrayLight; /* legible when not focused */
-		auto row = CatchEvent(Slider(opt), [&ed, s](Event e) {
+		auto row = CatchEvent(Slider(opt), [&, s](Event e) {
 			if (e == Event::Character(' ') || e == Event::Return) {
-				/* Spells with no book are granted by the class; the game masks
-				 * them straight back out of _pMemSpells. */
-				if (hero_spell_has_book(ed.entry.flavor, s))
-					ed.spell_known[s] = !ed.spell_known[s];
+				/*
+				 * Spells with no book are granted by the class; the game masks
+				 * them straight back out of _pMemSpells. Say so rather than
+				 * doing nothing -- a key that silently no-ops on some rows
+				 * reads as a broken key, not as a rule.
+				 */
+				if (!hero_spell_has_book(ed.entry.flavor, s)) {
+					const char *nm = hero_spell_name(ed.entry.flavor, s);
+					status = std::string(nm ? nm : "that spell")
+					    + " has no book -- the game grants it as a skill, so the "
+					      "book bit would not survive loading";
+					status_color = Color::Yellow;
+					return true;
+				}
+				ed.spell_known[s] = !ed.spell_known[s];
+				status.clear();
 				return true;
 			}
 			return false;
@@ -511,7 +533,9 @@ int tui_main(int argc, char **argv)
 		                   text(Pad("level", 4)),
 		               })
 		    | dim);
-		rows.push_back(text("   space toggles the spell book") | dim);
+		rows.push_back(text("   space toggles the spell book; \u00b7 marks a spell "
+		                    "that has none") 
+		    | dim);
 		rows.push_back(separator());
 		for (size_t i = 0; i < spell_ids.size(); i++) {
 			int s = spell_ids[i];
@@ -634,8 +658,8 @@ int tui_main(int argc, char **argv)
 		    }),
 		    text(std::string(" tab pane · ↑↓ field · ←→ adjust")
 		        + (tab_index == 1 ? " · space toggle" : "")
-		        + " · ^S save · ^R revert · ^B backup"
-		        + (nsaves > 1 ? " · esc back" : "") + " · q quit ")
+		        + " · ^S save · ^F fix · ^R revert · ^B backup"
+		        + (!named_one ? " · esc back" : "") + " · q quit ")
 		        | dim,
 		});
 
@@ -746,7 +770,36 @@ int tui_main(int argc, char **argv)
 			backup = !backup;
 			return true;
 		}
-		if (e == Event::Escape && nsaves > 1) {
+		/*
+		 * Repair. The sheet refuses to save an invalid character, so without
+		 * this there is no way out of one from inside the UI. Nothing is
+		 * written -- ^S still saves and ^R still throws it away.
+		 */
+		if (e == Event::CtrlF) {
+			PkPlayerStruct h = ed.Compose();
+			DiagList log;
+			dl_init(&log);
+			int n = hero_fix(&h, ed.entry.flavor, /*settle_warnings=*/1, &log);
+			std::string first;
+			if (log.n > 0)
+				first = log.items[0].msg;
+			dl_free(&log);
+
+			if (n == 0) {
+				status = "nothing to repair";
+				status_color = Color::GrayLight;
+			} else {
+				ed.ApplyRepair(h);
+				reload_classes();
+				status = std::to_string(n) + (n == 1 ? " fix: " : " fixes, first: ")
+				    + first + "  (^S save, ^R undo)";
+				status_color = Color::Green;
+			}
+			return true;
+		}
+		/* Back to the picker, unless a single save was named on the command
+		 * line and there is no picker to go back to. */
+		if (e == Event::Escape && !named_one) {
 			screen_index = 0;
 			return true;
 		}

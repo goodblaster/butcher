@@ -858,6 +858,251 @@ int hero_validate(const PkPlayerStruct *h, HeroFlavor f, char *err)
 	return ok;
 }
 
+/* ------------------------------------------------------------------ */
+/* Repair                                                              */
+/* ------------------------------------------------------------------ */
+
+/** Clamp @p v into [lo,hi], logging when it moves. */
+static int fix_clamp(int v, int lo, int hi, DiagList *log, const char *where,
+    const char *what, int *changed)
+{
+	if (v >= lo && v <= hi)
+		return v;
+	int out = v < lo ? lo : hi;
+	dl_add(log, DIAG_NOTE, where, "%s was %d, now %d", what, v, out);
+	(*changed)++;
+	return out;
+}
+
+int hero_fix(PkPlayerStruct *h, HeroFlavor f, int settle_warnings, DiagList *log)
+{
+	int changed = 0;
+
+	/* ---- name ---- */
+	char nerr[HERO_ERR_LEN];
+	char nbuf[PLR_NAME_LEN + 1];
+	memcpy(nbuf, h->pName, PLR_NAME_LEN);
+	nbuf[PLR_NAME_LEN] = '\0';
+	if (!hero_name_valid(nbuf, nerr)) {
+		char clean[PLR_NAME_LEN];
+		int w = 0;
+		for (int i = 0; i < PLR_NAME_LEN - 1 && nbuf[i] != '\0'; i++) {
+			unsigned char c = (unsigned char)nbuf[i];
+			if (c >= ' ' && c < 127 && c != '/' && c != '\\' && c != ':')
+				clean[w++] = (char)c;
+		}
+		clean[w] = '\0';
+		if (w == 0)
+			snprintf(clean, sizeof(clean), "Nameless");
+		dl_add(log, DIAG_NOTE, "name", "\"%s\" was not a usable name, now \"%s\"",
+		    nbuf, clean);
+		memset(h->pName, 0, PLR_NAME_LEN);
+		strncpy(h->pName, clean, PLR_NAME_LEN - 1);
+		changed++;
+	}
+
+	/*
+	 * A class outside the range makes the character unloadable, and there is
+	 * no way to recover the intended one -- InitPlayer indexes its tables by
+	 * class. Warrior is the only safe landing place, and it is said loudly.
+	 */
+	if (h->pClass < 0 || h->pClass >= hero_num_classes(f)) {
+		dl_add(log, DIAG_NOTE, "class",
+		    "class %d does not exist in %s; reset to Warrior. Set it to what "
+		    "you actually want -- this is a guess, not a recovery",
+		    h->pClass, hero_flavor_name(f));
+		h->pClass = PC_WARRIOR;
+		changed++;
+	}
+
+	/* ---- attributes ---- */
+	static const char *const stat_where[4] = { "attributes.strength",
+		"attributes.magic", "attributes.dexterity", "attributes.vitality" };
+	BYTE *stat[4] = { &h->pBaseStr, &h->pBaseMag, &h->pBaseDex, &h->pBaseVit };
+	for (int i = 0; i < 4; i++) {
+		int cap = hero_max_stat(f, h->pClass, i);
+		if (*stat[i] > cap) {
+			dl_add(log, DIAG_NOTE, stat_where[i], "%u was above the %s cap of %d, now %d",
+			    *stat[i], hero_class_name(f, h->pClass), cap, cap);
+			*stat[i] = (BYTE)cap;
+			changed++;
+		}
+	}
+
+	/* ---- level and experience ---- */
+	h->pLevel = (char)fix_clamp(h->pLevel, 1, hero_max_level(), log, "level",
+	    "level", &changed);
+	if (h->pExperience < 0) {
+		dl_add(log, DIAG_NOTE, "experience", "was negative (%d), now 0", h->pExperience);
+		h->pExperience = 0;
+		changed++;
+	} else if ((DWORD)h->pExperience > MAXEXP) {
+		dl_add(log, DIAG_NOTE, "experience", "%d was above the cap, now %u",
+		    h->pExperience, (unsigned)MAXEXP);
+		h->pExperience = (int)MAXEXP;
+		changed++;
+	}
+
+	/* ---- life and mana ---- */
+	if (h->pMaxHPBase < HERO_FROM_WHOLE(1)) {
+		dl_add(log, DIAG_NOTE, "life.max", "was below 1, now 1");
+		h->pMaxHPBase = HERO_FROM_WHOLE(1);
+		changed++;
+	}
+	if (h->pHPBase > h->pMaxHPBase) {
+		dl_add(log, DIAG_NOTE, "life.current", "%d was above the maximum, now %d",
+		    HERO_TO_WHOLE(h->pHPBase), HERO_TO_WHOLE(h->pMaxHPBase));
+		h->pHPBase = h->pMaxHPBase;
+		changed++;
+	}
+	if (h->pHPBase < HERO_FROM_WHOLE(1)) {
+		/* The game rewrites this to 64 on load anyway; do it here so the file
+		 * says what the character will actually be. */
+		dl_add(log, DIAG_NOTE, "life.current", "was below 1, now 1");
+		h->pHPBase = HERO_FROM_WHOLE(1);
+		changed++;
+	}
+	if (h->pManaBase > h->pMaxManaBase) {
+		dl_add(log, DIAG_NOTE, "mana.current", "%d was above the maximum, now %d",
+		    HERO_TO_WHOLE(h->pManaBase), HERO_TO_WHOLE(h->pMaxManaBase));
+		h->pManaBase = h->pMaxManaBase;
+		changed++;
+	}
+
+	/* ---- position ---- */
+	if (h->plrlevel >= hero_num_levels(f)) {
+		int last = hero_num_levels(f) - 1;
+		dl_add(log, DIAG_NOTE, "position.dungeon_level",
+		    "%u is beyond %s, now %d", h->plrlevel, hero_flavor_name(f), last);
+		h->plrlevel = (BYTE)last;
+		changed++;
+	}
+
+	/* ---- spells ---- */
+	for (int s = 1; s < hero_spell_persisted(); s++) {
+		int lvl = hero_get_spell_level(h, s);
+		int bit = (h->pMemSpells & SPELLBIT(s)) != 0;
+		if (lvl == 0 && !bit)
+			continue;
+
+		if (!hero_spell_exists(f, s)) {
+			dl_add(log, DIAG_NOTE, "spells",
+			    "spell id %d does not exist in %s; cleared", s, hero_flavor_name(f));
+			if (s < MAX_SPELLS)
+				h->pSplLvl[s] = 0;
+			else
+				h->pSplLvl2[s - MAX_SPELLS] = 0;
+			h->pMemSpells &= ~SPELLBIT(s);
+			changed++;
+			continue;
+		}
+
+		if (lvl < 0) {
+			dl_add(log, DIAG_NOTE, "spells", "%s had a negative level, now 0",
+			    hero_spell_name(f, s));
+			if (s < MAX_SPELLS)
+				h->pSplLvl[s] = 0;
+			else
+				h->pSplLvl2[s - MAX_SPELLS] = 0;
+			changed++;
+		} else if (settle_warnings && lvl > hero_spell_max_level()) {
+			dl_add(log, DIAG_NOTE, "spells", "%s was level %d, now %d (the game's cap)",
+			    hero_spell_name(f, s), lvl, hero_spell_max_level());
+			if (s < MAX_SPELLS)
+				h->pSplLvl[s] = (char)hero_spell_max_level();
+			else
+				h->pSplLvl2[s - MAX_SPELLS] = (char)hero_spell_max_level();
+			changed++;
+		}
+
+		if (settle_warnings && bit && !hero_spell_has_book(f, s)) {
+			dl_add(log, DIAG_NOTE, "spells",
+			    "%s has no book; removed from the spell book, as the game "
+			    "would on load",
+			    hero_spell_name(f, s));
+			h->pMemSpells &= ~SPELLBIT(s);
+			changed++;
+		}
+
+		/* A level with no book bit: the level is the deliberate part, so put
+		 * the spell in the book rather than throwing the level away. */
+		if (settle_warnings && !bit && hero_get_spell_level(h, s) > 0
+		    && hero_spell_has_book(f, s)) {
+			dl_add(log, DIAG_NOTE, "spells",
+			    "%s had a level but was not in the spell book; added",
+			    hero_spell_name(f, s));
+			h->pMemSpells |= SPELLBIT(s);
+			changed++;
+		}
+	}
+
+	/* Hellfire's overflow area has no meaning in a Diablo save. */
+	if (f != FLAVOR_HELLFIRE) {
+		for (int i = 0; i < 10; i++) {
+			if (h->pSplLvl2[i] == 0)
+				continue;
+			dl_add(log, DIAG_NOTE, "spells",
+			    "cleared the Hellfire spell area, which a Diablo save does not use");
+			memset(h->pSplLvl2, 0, sizeof(h->pSplLvl2));
+			changed++;
+			break;
+		}
+	}
+
+	/*
+	 * ---- inventory ----
+	 *
+	 * The count is recomputed rather than clamped. Clamping a wild value to 40
+	 * only trades one error for forty: the game takes InvList[0.._pNumInv-1]
+	 * as live, so the count has to match the items that are actually there.
+	 * Slots above it may hold stale entries -- RemoveInvItem leaves those
+	 * behind -- so the live run is the leading one.
+	 */
+	{
+		int live = 0;
+		while (live < NUM_INV_GRID_ELEM && h->InvList[live].idx != 0xFFFF)
+			live++;
+		if (h->_pNumInv != live) {
+			dl_add(log, DIAG_NOTE, "inventory.count",
+			    "was %u but %d item%s actually present; now %d", h->_pNumInv, live,
+			    live == 1 ? " is" : "s are", live);
+			h->_pNumInv = (BYTE)live;
+			changed++;
+		}
+	}
+	/*
+	 * Grid cells naming an item that is not live. Clearing the cell is the
+	 * conservative repair: the alternative is inventing an item, and a packed
+	 * item is a seed the game replays rather than anything we could author.
+	 */
+	for (int i = 0; i < NUM_INV_GRID_ELEM; i++) {
+		int cell = h->InvGrid[i];
+		int idx = cell < 0 ? -cell : cell;
+		if (idx == 0 || idx <= h->_pNumInv)
+			continue;
+		dl_add(log, DIAG_NOTE, "inventory.grid",
+		    "cell %d pointed at item %d, but only %u are live; cleared", i, idx,
+		    h->_pNumInv);
+		h->InvGrid[i] = 0;
+		changed++;
+	}
+
+	/* ---- gold ---- */
+	if (settle_warnings) {
+		int stacked = hero_gold_in_stacks(h);
+		if (stacked != h->pGold) {
+			dl_add(log, DIAG_NOTE, "gold",
+			    "cached total was %d but the stacks hold %d; now %d, which is "
+			    "what the game would compute",
+			    h->pGold, stacked, stacked);
+			h->pGold = stacked;
+			changed++;
+		}
+	}
+
+	return changed;
+}
+
 void hero_warnings(const PkPlayerStruct *h, HeroFlavor f, void (*warn)(const char *))
 {
 	DiagList dl;

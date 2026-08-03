@@ -628,6 +628,90 @@ static const char *kind_label(InputKind k)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* fix                                                                 */
+/* ------------------------------------------------------------------ */
+
+static int cmd_fix(int argc, char **argv)
+{
+	const char *path = NULL;
+	int dry = 0, backup = 1, all = 0;
+
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--dry-run") == 0)
+			dry = 1;
+		else if (strcmp(argv[i], "--no-backup") == 0)
+			backup = 0;
+		else if (strcmp(argv[i], "--all") == 0)
+			all = 1;
+		else if (path == NULL)
+			path = argv[i];
+		else {
+			fprintf(stderr, "unexpected argument: %s\n", argv[i]);
+			return 2;
+		}
+	}
+	if (path == NULL) {
+		fprintf(stderr, "usage: butcher fix <save.sv> [--all] [--dry-run] "
+		                "[--no-backup]\n");
+		return 2;
+	}
+
+	PkPlayerStruct h;
+	if (!read_or_die(path, &h))
+		return 1;
+	HeroFlavor f = flavor_of(path);
+
+	DiagList log;
+	dl_init(&log);
+	int n = hero_fix(&h, f, all, &log);
+
+	if (n == 0) {
+		dl_free(&log);
+		/*
+		 * Nothing to repair is not the same as nothing wrong: --all is what
+		 * settles the warnings, so say so rather than implying a clean file.
+		 */
+		char err[HERO_ERR_LEN];
+		if (hero_validate(&h, f, err)) {
+			DiagList chk;
+			dl_init(&chk);
+			hero_check(&h, f, &chk);
+			int w = dl_count(&chk, DIAG_WARNING);
+			dl_free(&chk);
+			if (w > 0 && !all)
+				printf("%s: nothing to repair; %d warning%s left alone "
+				       "(--all settles those too)\n",
+				    path, w, w == 1 ? "" : "s");
+			else
+				printf("%s: nothing to repair\n", path);
+		} else {
+			printf("%s: nothing could be repaired automatically\n", path);
+			fprintf(stderr, "butcher: %s\n", err);
+			return 1;
+		}
+		return 0;
+	}
+
+	dl_report(&log, path, stdout);
+	dl_free(&log);
+	printf("\n%d change%s\n", n, n == 1 ? "" : "s");
+
+	/* Never write something that still would not load. */
+	char err[HERO_ERR_LEN];
+	if (!hero_validate(&h, f, err)) {
+		fprintf(stderr, "\nbutcher: still invalid after repair: %s\n", err);
+		fprintf(stderr, "the save was not written.\n");
+		return 1;
+	}
+
+	if (dry) {
+		printf("\n--dry-run: nothing written\n");
+		return 0;
+	}
+	return commit(path, &h, f, backup);
+}
+
 static int cmd_validate(int argc, char **argv)
 {
 	const char *path = NULL;
@@ -982,6 +1066,14 @@ static int usage(void)
 	    "        clean, 1 on errors (or on warnings, with --strict). Reads\n"
 	    "        standard input when given \"-\".\n"
 	    "\n"
+	    "  butcher fix <save.sv> [--all] [--dry-run] [--no-backup]\n"
+	    "        Repair whatever validate reports, where the right answer is\n"
+	    "        unambiguous: values are clamped into the range the game\n"
+	    "        accepts, and state it cannot represent is cleared. Lists every\n"
+	    "        change. --all also settles the warnings -- the cached gold\n"
+	    "        total, and spell state the game would correct on load.\n"
+	    "        Refuses to write if the result would still not load.\n"
+	    "\n"
 	    "  butcher export <save.sv> [-o char.json]\n"
 	    "  butcher import <save.sv> -i char.json [--dry-run] [--force]\n"
 	    "        Round-trip the whole character as JSON. Lossless: edit any\n"
@@ -1023,6 +1115,8 @@ int cli_main(int argc, char **argv)
 		return cmd_set(rest, argv + 2);
 	if (strcmp(argv[1], "validate") == 0)
 		return cmd_validate(rest, argv + 2);
+	if (strcmp(argv[1], "fix") == 0)
+		return cmd_fix(rest, argv + 2);
 	if (strcmp(argv[1], "export") == 0)
 		return cmd_export(rest, argv + 2);
 	if (strcmp(argv[1], "import") == 0)

@@ -576,6 +576,133 @@ static void check_spells(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 5c. Automatic repair                                                */
+/* ------------------------------------------------------------------ */
+
+/** Everything hero_check found, after hero_fix has had a go. */
+static int errors_after_fix(PkPlayerStruct *h, HeroFlavor f, int all, int *fixes)
+{
+	DiagList log;
+	dl_init(&log);
+	*fixes = hero_fix(h, f, all, &log);
+	dl_free(&log);
+
+	DiagList dl;
+	dl_init(&dl);
+	hero_check(h, f, &dl);
+	int e = dl_count(&dl, DIAG_ERROR);
+	dl_free(&dl);
+	return e;
+}
+
+static void check_fix(void)
+{
+	section("5c. automatic repair");
+
+	PkPlayerStruct h;
+	int n;
+
+	/* Every error at once: fix must clear all of them in one pass. */
+	base_hero(&h, PC_SORCERER);
+	h.pLevel = 99;
+	h.pExperience = -5;
+	h.pBaseStr = 200;
+	h.pHPBase = HERO_FROM_WHOLE(90);
+	h.plrlevel = 30;
+	h.pMemSpells |= SPELLBIT(37);
+	h.pSplLvl2[0] = 4;
+	h._pNumInv = 99;
+
+	ok(errors_after_fix(&h, FLAVOR_DIABLO, 0, &n) == 0,
+	    "a character with seven independent errors comes back clean");
+	/* Seven, not eight: spell 37's level *is* pSplLvl2[0], so clearing the
+	 * foreign id resolves both in one change. */
+	okf(n >= 7, "%d changes were made", n);
+	ok(h.pLevel >= 1 && h.pLevel <= hero_max_level(), "the level is in range");
+	ok(h.pExperience == 0, "negative experience became 0");
+	ok(h.pBaseStr == hero_max_stat(FLAVOR_DIABLO, PC_SORCERER, 0),
+	    "the stat came down to its cap, not to something invented");
+	ok(h.pHPBase <= h.pMaxHPBase, "life is no longer above its maximum");
+	ok(h.plrlevel < hero_num_levels(FLAVOR_DIABLO), "the dungeon level is in range");
+	ok((h.pMemSpells & SPELLBIT(37)) == 0, "the foreign spell id is gone");
+	ok(h.pSplLvl2[0] == 0, "Hellfire's spell area is cleared in a Diablo save");
+	ok(h._pNumInv <= NUM_INV_GRID_ELEM, "the item count fits the grid");
+
+	/* Running it twice must change nothing the second time. */
+	int again;
+	DiagList log;
+	dl_init(&log);
+	again = hero_fix(&h, FLAVOR_DIABLO, 0, &log);
+	dl_free(&log);
+	ok(again == 0, "a second pass finds nothing left to do");
+
+	/* A clean character is left exactly alone. */
+	base_hero(&h, PC_WARRIOR);
+	PkPlayerStruct before = h;
+	dl_init(&log);
+	n = hero_fix(&h, FLAVOR_DIABLO, 1, &log);
+	dl_free(&log);
+	ok(n == 0 && memcmp(&h, &before, sizeof(h)) == 0,
+	    "a valid character is not touched, even with --all");
+
+	/* Warnings are left alone by default and settled with --all. */
+	base_hero(&h, PC_WARRIOR);
+	h.pGold = 5000; /* cached, but no stacks hold it */
+	int firebolt = hero_find_spell(FLAVOR_DIABLO, "Firebolt");
+	int identify = hero_find_spell(FLAVOR_DIABLO, "Identify");
+	h.pSplLvl[firebolt] = 40;         /* above the game's clamp */
+	h.pMemSpells |= SPELLBIT(identify); /* a spell with no book */
+
+	PkPlayerStruct conservative = h;
+	dl_init(&log);
+	n = hero_fix(&conservative, FLAVOR_DIABLO, /*settle_warnings=*/0, &log);
+	dl_free(&log);
+	ok(n == 0, "none of that is touched without --all");
+	ok(conservative.pGold == 5000, "  ...the gold cache is left as found");
+
+	dl_init(&log);
+	n = hero_fix(&h, FLAVOR_DIABLO, /*settle_warnings=*/1, &log);
+	dl_free(&log);
+	okf(n >= 3, "--all settles them (%d changes)", n);
+	ok(h.pGold == hero_gold_in_stacks(&h), "the gold cache matches the stacks");
+	ok(h.pSplLvl[firebolt] == hero_spell_max_level(), "the spell level is clamped");
+	ok((h.pMemSpells & SPELLBIT(identify)) == 0, "the bookless spell left the book");
+
+	DiagList dl;
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 0 && dl_count(&dl, DIAG_WARNING) == 0,
+	    "and nothing at all is reported afterwards");
+	dl_free(&dl);
+
+	/* A spell with a level but no book bit gains the bit, keeping the level. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl[firebolt] = 6;
+	dl_init(&log);
+	hero_fix(&h, FLAVOR_DIABLO, 1, &log);
+	dl_free(&log);
+	ok(h.pSplLvl[firebolt] == 6 && (h.pMemSpells & SPELLBIT(firebolt)) != 0,
+	    "a spell with a level joins the book rather than losing the level");
+
+	/* An impossible class has to land somewhere valid. */
+	base_hero(&h, PC_WARRIOR);
+	h.pClass = 3; /* a Monk, in a Diablo save */
+	ok(errors_after_fix(&h, FLAVOR_DIABLO, 0, &n) == 0,
+	    "a class the game does not have is repaired");
+	ok(h.pClass >= 0 && h.pClass < hero_num_classes(FLAVOR_DIABLO),
+	    "  ...to one that exists");
+
+	/* Hellfire keeps what Diablo cannot hold. */
+	base_hero(&h, PC_WARRIOR);
+	h.pSplLvl2[0] = 4;
+	h.pMemSpells |= SPELLBIT(37);
+	dl_init(&log);
+	hero_fix(&h, FLAVOR_HELLFIRE, 0, &log);
+	dl_free(&log);
+	ok(h.pSplLvl2[0] == 4, "a Hellfire save keeps its pSplLvl2 data");
+}
+
+/* ------------------------------------------------------------------ */
 /* 6. Suggestion quality                                               */
 /* ------------------------------------------------------------------ */
 
@@ -822,6 +949,7 @@ int main(void)
 	check_structure();
 	check_hero_all();
 	check_spells();
+	check_fix();
 	check_suggestions();
 	check_input_kinds();
 	check_real_save();

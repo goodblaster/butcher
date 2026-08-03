@@ -88,39 +88,50 @@ struct Editor {
 	{
 		entry = e;
 		original = e.hero;
+		Adopt(e.hero);
+	}
 
+	/**
+	 * Pull every field from @p src without touching `entry` or `original`.
+	 *
+	 * Load() resets the baseline that Dirty() and revert are measured against;
+	 * this does not. Used to bring a repaired character onto the sheet so it
+	 * still reads as an unsaved change the user can back out of.
+	 */
+	void Adopt(const PkPlayerStruct &src)
+	{
 		char n[PLR_NAME_LEN + 1];
-		memcpy(n, e.hero.pName, PLR_NAME_LEN);
+		memcpy(n, src.pName, PLR_NAME_LEN);
 		n[PLR_NAME_LEN] = '\0';
 		name = n;
 
-		cls = e.hero.pClass;
-		str = e.hero.pBaseStr;
-		mag = e.hero.pBaseMag;
-		dex = e.hero.pBaseDex;
-		vit = e.hero.pBaseVit;
-		statpts = e.hero.pStatPts;
-		hp = HERO_TO_WHOLE(e.hero.pHPBase);
-		hp_max = HERO_TO_WHOLE(e.hero.pMaxHPBase);
-		mana = HERO_TO_WHOLE(e.hero.pManaBase);
-		mana_max = HERO_TO_WHOLE(e.hero.pMaxManaBase);
-		dlvl = e.hero.plrlevel;
+		cls = src.pClass;
+		str = src.pBaseStr;
+		mag = src.pBaseMag;
+		dex = src.pBaseDex;
+		vit = src.pBaseVit;
+		statpts = src.pStatPts;
+		hp = HERO_TO_WHOLE(src.pHPBase);
+		hp_max = HERO_TO_WHOLE(src.pMaxHPBase);
+		mana = HERO_TO_WHOLE(src.pManaBase);
+		mana_max = HERO_TO_WHOLE(src.pMaxManaBase);
+		dlvl = src.plrlevel;
 
-		level_stored = e.hero.pLevel;
-		level_target = hero_level_for_exp(e.hero.pExperience);
+		level_stored = src.pLevel;
+		level_target = hero_level_for_exp(src.pExperience);
 		level_opened = level_target;
 
-		gold = hero_gold_in_stacks(&e.hero);
+		gold = hero_gold_in_stacks(&src);
 		gold_opened = gold;
-		gold_cap = hero_gold_capacity(&e.hero);
+		gold_cap = hero_gold_capacity(&src);
 
 		for (int s = 0; s < kSpellSlots; s++) {
 			spell_lvl[s] = 0;
 			spell_known[s] = false;
 		}
 		for (int s = 0; s < hero_spell_persisted(); s++) {
-			spell_lvl[s] = hero_get_spell_level(&e.hero, s);
-			spell_known[s] = s > 0 && (e.hero.pMemSpells & SPELLBIT(s)) != 0;
+			spell_lvl[s] = hero_get_spell_level(&src, s);
+			spell_known[s] = s > 0 && (src.pMemSpells & SPELLBIT(s)) != 0;
 		}
 
 		RefreshCaps();
@@ -187,10 +198,26 @@ struct Editor {
 		return h;
 	}
 
+	/**
+	 * Modified relative to what is on disk.
+	 *
+	 * Measured against entry.hero rather than `original`, because a repair
+	 * replaces `original` -- Compose() builds on it, so fields the sheet does
+	 * not own (the inventory grid, the cached gold total) would otherwise be
+	 * dropped. entry.hero stays as the file read, which is what "unchanged"
+	 * has to mean.
+	 */
 	bool Dirty() const
 	{
 		PkPlayerStruct h = Compose();
-		return memcmp(&h, &original, sizeof(h)) != 0;
+		return memcmp(&h, &entry.hero, sizeof(h)) != 0;
+	}
+
+	/** Rebase Compose() on @p h and show it, leaving entry.hero as the file. */
+	void ApplyRepair(const PkPlayerStruct &h)
+	{
+		original = h;
+		Adopt(h);
 	}
 };
 

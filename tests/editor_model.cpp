@@ -313,6 +313,76 @@ static void check_spell_flavor(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 3c. Repair from inside the sheet                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The sheet refuses to save an invalid character, so ^F is the only way out of
+ * one. It must rebase Compose() on the repaired struct -- Compose() builds on
+ * `original`, so a fix to something the sheet does not own (the inventory
+ * grid, the cached gold total) would be dropped on the next keystroke.
+ */
+static void check_repair(void)
+{
+	section("3c. repairing without losing the ability to undo");
+
+	Editor ed;
+	PkPlayerStruct h;
+
+	/*
+	 * A stale gold cache, and nothing else. Compose() does not write pGold
+	 * unless the slider moved, so this isolates the property under test: a
+	 * repair to a field the sheet does not own has to survive Compose.
+	 */
+	base_hero(&h, "Aidan", PC_WARRIOR);
+	h.pGold = 5000; /* cached, with no stacks behind it */
+
+	SaveEntry entry = make_entry("/tmp/single_0.sv", h);
+	ed.Load(entry);
+	ok(!ed.Dirty(), "a freshly opened character is unchanged");
+
+	PkPlayerStruct fixed = ed.Compose();
+	DiagList log;
+	dl_init(&log);
+	int n = hero_fix(&fixed, ed.entry.flavor, /*settle_warnings=*/1, &log);
+	dl_free(&log);
+	ok(n > 0, "hero_fix finds something to repair");
+
+	ed.ApplyRepair(fixed);
+
+	char err[HERO_ERR_LEN];
+	PkPlayerStruct after = ed.Compose();
+	ok(hero_validate(&after, FLAVOR_DIABLO, err), "the sheet still composes a valid character");
+
+	/*
+	 * If the repair had not been folded into `original`, Compose would rebuild
+	 * from the file's struct and this would still read 5000.
+	 */
+	ok(after.pGold == hero_gold_in_stacks(&after),
+	    "a repair to a field the sheet does not own survives Compose");
+
+	ok(ed.Dirty(), "and the character reads as modified, so it can be saved");
+
+	/* Revert means "what is on disk", not "what the repair produced". */
+	ed.Load(ed.entry);
+	PkPlayerStruct reverted = ed.Compose();
+	ok(memcmp(&reverted, &h, sizeof(h)) == 0, "reverting comes back to the file");
+	ok(!ed.Dirty(), "  ...and reads as unchanged again");
+
+	/*
+	 * Separately: opening a character the sheet cannot reproduce reads as
+	 * modified straight away, because Compose sanitises the foreign spell id
+	 * it will not write.
+	 */
+	base_hero(&h, "Aidan", PC_WARRIOR);
+	h.pMemSpells |= SPELLBIT(37); /* a Hellfire id in a Diablo save */
+	ed.Load(make_entry("/tmp/single_0.sv", h));
+	ok(ed.Dirty(), "a damaged character reads as modified the moment it is opened");
+	ok((ed.Compose().pMemSpells & SPELLBIT(37)) == 0,
+	    "  ...because the sheet refuses to write the foreign id back");
+}
+
+/* ------------------------------------------------------------------ */
 /* 4. Name sanitising                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -359,6 +429,7 @@ int main(void)
 	check_roundtrip();
 	check_caps();
 	check_spell_flavor();
+	check_repair();
 	check_names();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

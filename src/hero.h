@@ -176,6 +176,24 @@ void hero_check_spells(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl);
 int hero_validate(const PkPlayerStruct *h, HeroFlavor f, char *err);
 
 /**
+ * Repair @p h in place, appending one DIAG_NOTE per change to @p log.
+ *
+ * Fixes only what has an unambiguous right answer: values are clamped to the
+ * range the game itself would accept, and state the game cannot represent is
+ * cleared. It never invents a character -- a stat over its cap comes down to
+ * the cap rather than to something plausible, and items are never touched
+ * beyond the grid bookkeeping that points at them.
+ *
+ * With @p settle_warnings it also resolves the merely-surprising: the cached
+ * gold total, spell levels the game would clamp, and spell-book bits the game
+ * would mask away. Those are left alone by default because the game corrects
+ * them itself and the character loads either way.
+ *
+ * @return the number of changes made.
+ */
+int hero_fix(PkPlayerStruct *h, HeroFlavor f, int settle_warnings, DiagList *log);
+
+/**
  * Report conditions that are legal but will surprise the player -- an
  * experience/level mismatch, a cached pGold that disagrees with the stacks,
  * or a class that does not exist in this flavor. Calls @p warn per finding.

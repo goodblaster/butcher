@@ -21,7 +21,9 @@
 
 typedef enum DiagLevel {
 	DIAG_ERROR = 0,
-	DIAG_WARNING = 1
+	DIAG_WARNING = 1,
+	/** Something that was done, not something wrong. Used by hero_fix. */
+	DIAG_NOTE = 2
 } DiagLevel;
 
 typedef struct Diag {

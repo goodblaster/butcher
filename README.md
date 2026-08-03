@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 527 tests.
+package manager. `make check` builds the tool and runs 559 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -88,6 +88,11 @@ butcher --saves              # the game's own save folder
 butcher <save>               # open one directly
 butcher <dir>                # browse a particular directory
 ```
+
+**Naming a save file opens it; anything that scans a directory shows the
+picker** — even when the directory holds exactly one character. Landing
+straight in a character you did not choose is the tool picking for you, and
+with one save in the folder you would not notice it had.
 
 A bare `butcher` looks **only in the current directory**. If there is nothing
 there it tells you where your game keeps its saves and how to open them, but it
@@ -139,14 +144,19 @@ It opens on a picker, or straight into a character sheet with three panes —
 │  ✓ valid                                                                   │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ unchanged  backup on                                                 0E 0W │
-│ tab pane · ↑↓ field · ←→ adjust · ^S save · ^R revert · ^B backup · q quit │
+│ tab pane · ↑↓ field · ←→ adjust · ^S save · ^F fix · ^R revert · q quit    │
 ╰────────────────────────────────────────────────────────────────────────────╯
 ```
 
 `tab` cycles panes, arrows move between fields and adjust them, `space` toggles
-a spell in the book, `^S` saves behind a confirmation, `^R` reverts, `^B` toggles
-whether a backup is written, `^U` clears the name field, `esc` returns to the
-picker, and `q` quits. The `▸` marks the field you are on.
+a spell in the book, `^S` saves behind a confirmation, `^F` repairs anything
+invalid, `^R` reverts, `^B` toggles whether a backup is written, `^U` clears the
+name field, `esc` returns to the picker, and `q` quits. The `▸` marks the field
+you are on.
+
+The sheet will not save a character that fails validation, so `^F` is the way
+out of one: it applies the same repairs as `butcher fix --all`, shows what it
+changed, and writes nothing — `^S` still saves and `^R` still throws it away.
 
 **Every limit is the control, not a label.** The slider bounds are
 `hero_max_stat()` — switch a character to Barbarian and the magic slider becomes
@@ -235,6 +245,37 @@ broken.json:attributes.strength: error: 300 is outside 0..255; the save stores
 Only JSON has a document to get wrong, so the key and range checks apply to it
 alone; a save or a raw struct gets the character checks only.
 
+### Repairing
+
+```bash
+butcher fix single_0.sv              # make it loadable
+butcher fix single_0.sv --all        # and settle the warnings too
+butcher fix single_0.sv --dry-run    # just say what it would do
+```
+
+Repairs what `validate` reports, but only where the right answer is not a
+guess: values are clamped into the range the game accepts, and state the game
+cannot represent is cleared. It never invents a character — a stat over its cap
+comes down to the cap, not to something plausible, and items are never
+synthesized. Every change is listed:
+
+```
+$ butcher fix single_0.sv
+single_0.sv:spells: fixed: spell id 37 does not exist in Diablo; cleared
+single_0.sv:attributes.strength: fixed: 200 was above the Sorcerer cap of 45, now 45
+
+2 changes
+backed up to single_0.sv.bak
+saved.
+```
+
+By default it leaves warnings alone, since the game corrects those itself and
+the character loads either way. `--all` settles them as well. If the result
+would still not load, nothing is written and it says so.
+
+One case is a guess and says so loudly: a class the game does not have has no
+recoverable original, so it resets to Warrior and tells you to set it yourself.
+
 ## Things the game does that will surprise you
 
 These are the reasons this tool exists rather than a hex editor.
@@ -319,7 +360,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 527 checks |
+| `tests/` | Nine suites, 559 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |
