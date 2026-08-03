@@ -383,6 +383,66 @@ static void check_repair(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 3d. A level the game has not awarded yet                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * From a bug report: experience was raised, the game showed no change, and the
+ * sheet said "Level 20" for a character the game still called level 3.
+ *
+ * Both are correct. The slider shows the level the experience is worth;
+ * pLevel is what the game has awarded, and nothing recomputes it on load --
+ * AddPlrExperience does, on the next kill. The sheet has to show the gap
+ * whenever it exists, not only while the slider is being dragged, or reopening
+ * the file makes a pending level look like a finished one.
+ */
+static void check_pending_level(void)
+{
+	section("3d. a level the game has not awarded yet");
+
+	Editor ed;
+	PkPlayerStruct h;
+	base_hero(&h, "Jazreth", 3);
+	h.pLevel = 3;
+	h.pExperience = hero_exp_for_level(3);
+	ed.Load(make_entry("/tmp/single_0.hsv", h));
+
+	ok(ed.level_stored == ed.level_target,
+	    "a settled character has nothing pending");
+
+	/* Raise it the way the sheet does. */
+	ed.level_target = 20;
+	PkPlayerStruct raised = ed.Compose();
+	ok(raised.pExperience == hero_exp_for_level(20), "the slider writes experience");
+	ok(raised.pLevel == 3, "  ...and leaves the level for the game to award");
+
+	/*
+	 * Reopen it, as happens after a save. level_opened now equals
+	 * level_target, so anything keyed on "the slider moved" would go quiet --
+	 * but the gap is still there and still has to be reported.
+	 */
+	ed.Load(make_entry("/tmp/single_0.hsv", raised));
+	ok(ed.level_target == 20, "reopening shows the level the experience is worth");
+	ok(ed.level_stored == 3, "  ...and remembers what the game has actually awarded");
+	ok(ed.level_target != ed.level_stored,
+	    "  ...so the gap is visible without needing the slider to have moved");
+	ok(ed.level_opened == ed.level_target,
+	    "  ...even though the slider counts as untouched");
+
+	/* And hero_check says what will happen, in terms of what to do. */
+	DiagList dl;
+	dl_init(&dl);
+	hero_check(&raised, FLAVOR_HELLFIRE, &dl);
+	int mentions_kill = 0;
+	for (int i = 0; i < dl.n; i++)
+		if (strstr(dl.items[i].msg, "kill") != NULL)
+			mentions_kill = 1;
+	ok(dl_count(&dl, DIAG_WARNING) > 0 && mentions_kill,
+	    "validation names the trigger rather than saying \"on gaining experience\"");
+	dl_free(&dl);
+}
+
+/* ------------------------------------------------------------------ */
 /* 4. Name sanitising                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -430,6 +490,7 @@ int main(void)
 	check_caps();
 	check_spell_flavor();
 	check_repair();
+	check_pending_level();
 	check_names();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

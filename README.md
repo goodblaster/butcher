@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 575 tests.
+package manager. `make check` builds the tool and runs 590 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -331,6 +331,19 @@ unable to level again. So the TUI's Level slider writes **experience** and lets
 the game award the levels properly; the CLI warns and tells you the `--exp`
 value that does the same.
 
+**Nothing recomputes the level when a save is loaded.** `AddPlrExperience` is
+the only thing that does, and it runs when you gain experience — so a character
+given level-20 experience stays level 3 in game **until the first kill**, and
+then jumps straight to 20 with every level's rewards at once. This is the
+intended behaviour and not a failed edit, but it does mean loading the game and
+checking the character sheet shows nothing. The Level row says so:
+
+```
+  Level      20   ████████████████████                                  0-50
+  Experience 1,025,154
+   └ in game: level 3 until your next kill, then 20 (+85 pts, +34 life)
+```
+
 **Names must be unique across saves.** The game resolves a name to the first
 matching save slot, so two characters sharing one makes the other unreachable.
 `--name` checks the siblings and refuses; `list` warns about duplicates.
@@ -397,7 +410,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 575 checks |
+| `tests/` | Nine suites, 590 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

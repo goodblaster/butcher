@@ -443,18 +443,31 @@ int tui_main(int argc, char **argv)
 			    + " -> " + Commas(h.pExperience);
 		rows.push_back(text(exp_line));
 
+		/*
+		 * The slider shows the level the experience is worth; the game shows
+		 * the level it has actually awarded, and only catches up when
+		 * AddPlrExperience next runs -- on a kill. Say so whenever the two
+		 * disagree, not just while the slider is being moved. Hiding it after
+		 * a save left the sheet reading "Level 20" for a character the game
+		 * still calls level 3, which reads as the edit having failed.
+		 */
 		int gained = ed.level_target - ed.level_stored;
-		if (gained > 0 && ed.level_target != ed.level_opened) {
+		if (gained > 0) {
 			/* NextPlrLevel pays out per level: +5 stat points and a
 			 * class-dependent life bump, on the next experience gained. */
 			int hp_per = (ed.cls == PC_SORCERER ? 64 : 128) + 1;
-			rows.push_back(text("   └ game awards levels "
-			                  + std::to_string(ed.level_stored + 1) + "-"
-			                  + std::to_string(ed.level_target) + " on your next kill: +"
-			                  + std::to_string(gained * 5) + " stat pts, +"
+			rows.push_back(text("   └ in game: level "
+			                  + std::to_string(ed.level_stored) + " until your next kill, "
+			                  + "then " + std::to_string(ed.level_target) + " (+"
+			                  + std::to_string(gained * 5) + " pts, +"
 			                  + std::to_string((gained * hp_per) >> HERO_FIXED_SHIFT)
-			                  + " life")
+			                  + " life)")
 			    | color(Color::Cyan));
+		} else if (gained < 0) {
+			rows.push_back(text("   └ in game still level "
+			                  + std::to_string(ed.level_stored)
+			                  + "; the game never takes levels back")
+			    | color(Color::Yellow));
 		}
 
 		rows.push_back(separator());

@@ -704,9 +704,12 @@ void hero_check(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl)
 			    hero_exp_for_level(h->pLevel + 1), hero_exp_for_level(h->pLevel));
 		else if (implied > h->pLevel)
 			dl_add(dl, DIAG_WARNING, "level",
-			    "%d, but experience %d is worth level %d; the game will level "
-			    "the character up on its next experience gain",
-			    h->pLevel, h->pExperience, implied);
+			    "%d, but experience %d is worth level %d. Nothing recomputes "
+			    "this when a save is loaded -- the character stays level %d "
+			    "until AddPlrExperience next runs, which is your first kill. "
+			    "Then all %d levels are awarded at once, with their stat points "
+			    "and life",
+			    h->pLevel, h->pExperience, implied, h->pLevel, implied - h->pLevel);
 	}
 
 	if (f == FLAVOR_HELLFIRE) {
