@@ -24,25 +24,20 @@ static void warn_line(const char *msg)
 /**
  * Say so when the save holds a game in progress.
  *
- * The character-selection screen is drawn from `hero`, which is what this tool
- * edits, so an edit appears there and looks applied. Loading the character
- * then runs LoadGame, which overwrites the player from the `game` file. The
- * edit is visible but not effective -- worth a loud warning rather than
- * letting someone conclude the tool silently does nothing.
+ * No longer a warning about a broken edit -- gamefile.cpp keeps the two copies
+ * in step -- but still worth stating, because it explains why writing touches
+ * more of the file than the character sheet suggests.
  */
 static void warn_if_game_in_progress(const char *path)
 {
 	if (!save_has_game(path))
 		return;
 	fprintf(stderr,
-	    "\nwarning: %s holds a game in progress, so this edit will NOT take "
-	    "effect.\n"
-	    "  A save carries the character twice. \"hero\" is what butcher edits and\n"
-	    "  what the character-selection screen displays. \"game\" carries a second,\n"
-	    "  complete copy, and picking the character runs LoadGame, which\n"
-	    "  overwrites the player from it (Source/loadsave.cpp).\n"
-	    "  So the change will appear on the selection screen and then be gone\n"
-	    "  once you are in the dungeon. butcher cannot edit the \"game\" copy yet.\n",
+	    "\nnote: %s holds a game in progress.\n"
+	    "  The character is stored twice -- in \"hero\", which the character\n"
+	    "  selection screen shows, and in \"game\", which the game loads from once\n"
+	    "  you start playing. Edits are applied to both, so they will stick; the\n"
+	    "  inventory and everything else in the saved game is left alone.\n",
 	    path);
 }
 
@@ -227,13 +222,22 @@ static int commit(const char *path, const PkPlayerStruct *h, HeroFlavor f, int b
 		printf("backed up to %s\n", bak);
 	}
 
-	if (!save_commit(path, h, /*backup=*/0, err)) {
+	SaveGameSync sync = SAVE_GAME_ABSENT;
+	if (!save_commit_ex(path, h, /*backup=*/0, &sync, err)) {
 		fprintf(stderr, "butcher: %s\n", err);
 		return 1;
 	}
 	printf("saved.\n");
+	if (sync == SAVE_GAME_SYNCED)
+		printf("the saved game in progress was updated to match.\n");
+	else if (sync == SAVE_GAME_SYNCED_NO_ITEMS)
+		fprintf(stderr,
+		    "\nwarning: the saved game was updated, but the inventory was not.\n"
+		    "  butcher cannot yet edit items inside a game in progress, and gold\n"
+		    "  is stored as item stacks. The new total will show on the character\n"
+		    "  selection screen and then be recomputed from the stacks the saved\n"
+		    "  game still holds. Everything else in this edit will stick.\n");
 	hero_warnings(h, f, warn_line);
-	warn_if_game_in_progress(path);
 	return 0;
 }
 

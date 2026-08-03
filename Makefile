@@ -69,6 +69,7 @@ GAME_OBJ := \
 LIB_OBJ := \
 	$(BUILD)/shim.o \
 	$(BUILD)/savefile.o \
+	$(BUILD)/gamefile.o \
 	$(BUILD)/saveutil.o \
 	$(BUILD)/hero.o \
 	$(BUILD)/format.o \

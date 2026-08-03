@@ -181,11 +181,80 @@ int save_backup_to(const char *path, char *chosen, size_t chosen_len, char *err)
 
 int save_commit(const char *path, const PkPlayerStruct *h, int backup, char *err)
 {
-	if (backup && !save_backup(path, err))
+	return save_commit_ex(path, h, backup, NULL, err);
+}
+
+int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
+    SaveGameSync *sync, char *err)
+{
+	if (sync != NULL)
+		*sync = SAVE_GAME_ABSENT;
+
+	/*
+	 * Do all the work that can fail before touching the file. Locating the
+	 * character inside the saved game is the part most likely to refuse, and
+	 * failing after "hero" was already rewritten would leave exactly the
+	 * half-applied edit this exists to prevent.
+	 */
+	PkPlayerStruct old;
+	if (!save_read_hero(path, &old, NULL, err))
 		return 0;
 
-	if (!save_write_hero(path, h, err))
+	DWORD glen = 0;
+	int present = 0;
+	char gerr[MPQ_ERR_LEN] = { 0 };
+	BYTE *game = game_read(path, &glen, &present, gerr);
+	if (present && game == NULL) {
+		seterr(err, "%s", gerr);
 		return 0;
+	}
+
+	GameLoc loc;
+	if (game != NULL) {
+		/* Verified against the character as it is on disk, not as it is being
+		 * changed to -- the two copies agree only before the edit. */
+		if (!game_locate(game, glen, &old, &loc, gerr)) {
+			free(game);
+			seterr(err, "%s", gerr);
+			return 0;
+		}
+		game_apply(game, glen, &loc, h);
+	}
+
+	if (backup && !save_backup(path, err)) {
+		free(game);
+		return 0;
+	}
+
+	if (!save_write_hero(path, h, err)) {
+		free(game);
+		return 0;
+	}
+
+	if (game != NULL) {
+		int ok = game_write(path, game, glen, gerr);
+		free(game);
+		if (!ok) {
+			seterr(err, "the character was written but the saved game was not: "
+			            "%s. The save now disagrees with itself -- restore the "
+			            "backup.",
+			    gerr);
+			return 0;
+		}
+		if (sync != NULL) {
+			/*
+			 * Items are not carried across. Anything that moved the inventory
+			 * -- gold above all -- lands in "hero" only, and the game will
+			 * recompute the total from the stacks the saved game still holds.
+			 */
+			int items_moved = memcmp(old.InvBody, h->InvBody, sizeof(old.InvBody)) != 0
+			    || memcmp(old.InvList, h->InvList, sizeof(old.InvList)) != 0
+			    || memcmp(old.InvGrid, h->InvGrid, sizeof(old.InvGrid)) != 0
+			    || memcmp(old.SpdList, h->SpdList, sizeof(old.SpdList)) != 0
+			    || old._pNumInv != h->_pNumInv;
+			*sync = items_moved ? SAVE_GAME_SYNCED_NO_ITEMS : SAVE_GAME_SYNCED;
+		}
+	}
 
 	/* Never leave a save in place that does not read back as written. */
 	PkPlayerStruct after;

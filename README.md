@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 566 tests.
+package manager. `make check` builds the tool and runs 575 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -280,21 +280,27 @@ recoverable original, so it resets to Warrior and tells you to set it yourself.
 
 Read these before concluding the tool is broken. Both cost real debugging time.
 
-### A game in progress overrides everything
+### A game in progress stores the character twice
 
-**A save stores the character twice.** `hero` is the packed struct butcher
-edits, and it is what the character-selection screen displays. `game` — present
-whenever a game is in progress — holds a second, complete copy. Choosing the
-character runs `LoadGame`, which calls `LoadPlayer` and overwrites the player
-from `game` (DevilutionX `Source/loadsave.cpp`).
+**A save stores the character twice.** `hero` is the packed struct the
+character-selection screen displays. `game` — present whenever a game is in
+progress — holds a second, complete copy, and choosing the character runs
+`LoadGame`, which calls `LoadPlayer` and overwrites the player from it
+(DevilutionX `Source/loadsave.cpp`).
 
-So an edit to such a save **shows on the selection screen and is gone once you
-are in the dungeon**. Visible, but not effective.
+butcher writes **both**, so edits stick. `list` and the picker mark those saves
+with `!`, and the character sheet carries a banner, because saving then rewrites
+far more of the file than the sheet suggests.
 
-butcher cannot edit the `game` copy yet. It does detect the situation and say
-so everywhere it matters: `list` and the picker mark those saves with `!`, the
-character sheet carries a banner, and `show`/`set` warn. `butcher show <save>`
-tells you outright.
+**One exception: gold.** Items inside a saved game are stored as full structs
+rather than the packed 17-byte seeds in `hero`, and butcher does not edit them
+yet. Gold is really a set of item stacks, so a gold change reaches the selection
+screen and is then recomputed from the stacks the saved game still holds.
+butcher warns when an edit moves the inventory. Everything else — stats, level,
+experience, spells, name, class — applies to both copies.
+
+How this works, and why nothing in it trusts a computed offset, is in
+[docs/GAMEFILE.md](docs/GAMEFILE.md).
 
 ### Diablo and Hellfire never see each other's saves
 
@@ -391,7 +397,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 566 checks |
+| `tests/` | Nine suites, 575 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

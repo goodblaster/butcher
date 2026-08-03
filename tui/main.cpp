@@ -319,9 +319,9 @@ int tui_main(int argc, char **argv)
 		           picker_menu->Render() | frame | flex,
 		           separator(),
 		           any_in_progress
-		               ? text(" ! has a game in progress -- the game loads its own "
-		                      "copy over any edit ")
-		                   | color(Color::Yellow)
+		               ? text(" ! has a game in progress; edits are applied to the "
+		                      "saved game too ")
+		                   | color(Color::Cyan)
 		               : text(""),
 		           text(" ↑↓ choose · enter open · q quit ") | dim,
 		       })
@@ -654,14 +654,13 @@ int tui_main(int argc, char **argv)
 		    }),
 		    text(std::string(" ") + ed.entry.path) | dim,
 		    /*
-		     * A game in progress means the character is stored twice, and the
-		     * copy this edits is not the one the game loads from. Editing here
-		     * would show on the character-selection screen and then vanish, so
-		     * it has to be said before any keys are pressed, not on save.
+		     * A game in progress means the character is stored twice and saving
+		     * rewrites both. Worth stating, because it explains why writing
+		     * touches far more of the file than this sheet shows.
 		     */
 		    ed.entry.in_progress
-		        ? hbox({ text(" ! game in progress: the game loads over these edits ")
-		                     | color(Color::Black) | bgcolor(Color::Yellow) })
+		        ? hbox({ text(" game in progress -- edits are applied to it as well ")
+		                     | color(Color::Black) | bgcolor(Color::Cyan) })
 		        : text(""),
 		    separator(),
 		    tab_bar->Render(),
@@ -725,8 +724,11 @@ int tui_main(int argc, char **argv)
 					bool ok = true;
 					if (backup)
 						ok = save_backup_to(ed.entry.path, bak, sizeof(bak), werr) != 0;
+					SaveGameSync sync = SAVE_GAME_ABSENT;
 					if (ok)
-						ok = save_commit(ed.entry.path, &h, /*backup=*/0, werr) != 0;
+						ok = save_commit_ex(ed.entry.path, &h, /*backup=*/0, &sync,
+						         werr)
+						    != 0;
 					if (ok) {
 						ed.original = h;
 						ed.level_opened = ed.level_target;
@@ -736,6 +738,14 @@ int tui_main(int argc, char **argv)
 						 * user needs to know which file to restore from. */
 						status = backup ? std::string("saved -- backup ") + Leaf(bak)
 						                : std::string("saved");
+						if (sync == SAVE_GAME_SYNCED)
+							status += " (saved game updated too)";
+						else if (sync == SAVE_GAME_SYNCED_NO_ITEMS) {
+							status += " -- but the inventory was not carried into "
+							          "the saved game, so the gold total will not "
+							          "stick";
+							status_color = Color::Yellow;
+						}
 						status_color = Color::Green;
 					} else {
 						status = std::string("failed: ") + werr;

@@ -18,6 +18,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../src/gamefile.h"
+
 /* ------------------------------------------------------------------ */
 
 static int g_pass, g_fail;
@@ -96,7 +98,65 @@ static void base_hero(PkPlayerStruct *p, const char *name, int pclass)
 		p->SpdList[i].idx = 0xFFFF;
 }
 
-/** Write a one-file save archive containing this character. */
+/*
+ * A minimal but genuine "game" member.
+ *
+ * Layout mirrors LoadGame: a 4-byte magic, its 39-byte prologue, eight bytes
+ * per dungeon level, then the player record with _pName 320 in. Only the
+ * fields gamefile.cpp knows about are filled; the rest stays zero, which is
+ * what a real save's padding and pointer slots look like anyway.
+ */
+#define GAME_FIXTURE_LEVELS 25
+#define GAME_FIXTURE_RECORD (43 + GAME_FIXTURE_LEVELS * 8)
+#define GAME_FIXTURE_NAME (GAME_FIXTURE_RECORD + 320)
+#define GAME_FIXTURE_LEN (GAME_FIXTURE_NAME + 512)
+
+static void put32(BYTE *p, int v)
+{
+	p[0] = (BYTE)v;
+	p[1] = (BYTE)(v >> 8);
+	p[2] = (BYTE)(v >> 16);
+	p[3] = (BYTE)(v >> 24);
+}
+
+/** @param stale_tail leave junk after the name, as a renamed character has. */
+static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
+{
+	memset(out, 0, GAME_FIXTURE_LEN);
+	memcpy(out, "HELF", 4);
+
+	BYTE *rec = out + GAME_FIXTURE_NAME;
+	memcpy(rec - 127, h->pSplLvl, 37);
+	memcpy(rec - 127 + 37, h->pSplLvl2, 10);
+	memcpy(rec - 56, &h->pMemSpells, 8);
+
+	memcpy(rec, h->pName, PLR_NAME_LEN);
+	if (stale_tail) {
+		size_t n = strnlen(h->pName, PLR_NAME_LEN);
+		if (n + 2 < PLR_NAME_LEN) {
+			rec[n + 1] = 'j'; /* the game does not clear the old name */
+			rec[n + 2] = 'h';
+		}
+	}
+	rec[32] = (BYTE)h->pClass;
+	put32(rec + 40, h->pBaseStr);
+	put32(rec + 48, h->pBaseMag);
+	put32(rec + 56, h->pBaseDex);
+	put32(rec + 64, h->pBaseVit);
+	put32(rec + 68, h->pStatPts);
+	put32(rec + 80, h->pHPBase);
+	put32(rec + 84, h->pMaxHPBase);
+	put32(rec + 100, h->pManaBase);
+	put32(rec + 104, h->pMaxManaBase);
+	rec[120] = (BYTE)h->pLevel;
+	put32(rec + 124, h->pExperience);
+	put32(rec + 140, h->pGold);
+}
+
+/**
+ * Write a one-file save archive containing this character.
+ * @param with_game 0 none, 1 a saved game, 2 one with a stale name tail.
+ */
 static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_game)
 {
 	BYTE blob[1288];
@@ -110,7 +170,7 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 	memset(hash, 0xFF, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY));
 	InitHash();
 
-	BYTE body[4096];
+	static BYTE body[65536];
 	DWORD *offs = (DWORD *)body;
 	BYTE sector[MPQ_SECTOR_SIZE];
 	memcpy(sector, blob, 1288);
@@ -136,17 +196,34 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 		 * player from. The contents do not matter here -- only that the name
 		 * resolves, which is what save_has_game looks for.
 		 */
-		static const char kGame[] = "not a real saved game";
+		/*
+		 * A real saved game, not a placeholder: magic, LoadGame's prologue, and
+		 * a player record carrying the same character. Anything less would let
+		 * the commit path skip the part under test.
+		 */
+		BYTE plain[GAME_FIXTURE_LEN];
+		make_game_blob(plain, hero, with_game == 2);
+		DWORD genc = codec_get_encoded_len(sizeof(plain));
+		BYTE *gbuf = (BYTE *)malloc(genc);
+		memcpy(gbuf, plain, sizeof(plain));
+		codec_encode(gbuf, sizeof(plain), genc, SAVE_PASSWORD_SINGLE);
+
+		/* Stored the way the game stores it: one imploded sector. */
+		BYTE gsector[MPQ_SECTOR_SIZE];
+		memcpy(gsector, gbuf, genc);
+		free(gbuf);
+		int gstored = PkwareCompress(gsector, (int)genc);
+
 		DWORD gstart = total;
 		DWORD *goffs = (DWORD *)(body + gstart);
 		goffs[0] = 8;
-		goffs[1] = 8 + (DWORD)sizeof(kGame);
-		memcpy(body + gstart + 8, kGame, sizeof(kGame));
+		goffs[1] = 8 + (DWORD)gstored;
+		memcpy(body + gstart + 8, gsector, (size_t)gstored);
 
 		block[1].offset = (int)(MPQ_DATA_OFFSET + gstart);
 		block[1].sizealloc = (int)goffs[1];
-		block[1].sizefile = (int)sizeof(kGame);
-		block[1].flags = (int)MPQ_FLAG_EXISTS;
+		block[1].sizefile = (int)genc;
+		block[1].flags = (int)(MPQ_FLAG_EXISTS | MPQ_FLAG_IMPLODE);
 		DWORD gi = Hash("game", 0) & 0x7FF;
 		while (hash[gi].block != -1)
 			gi = (gi + 1) & 0x7FF;
@@ -228,13 +305,121 @@ static void check_game_in_progress(void)
 	PkPlayerStruct edited;
 	ok(save_read_hero(playing, &edited, NULL, err), "the flagged save still reads");
 	edited.pBaseDex = 250;
-	ok(save_commit(playing, &edited, /*backup=*/0, err), "and still writes");
+	err[0] = '\0';
+	if (!save_commit(playing, &edited, /*backup=*/0, err))
+		printf("        %s\n", err);
+	ok(err[0] == '\0', "and still writes");
 	ok(save_has_game(playing),
 	    "the game file survives a rewrite, so the warning does not disappear");
 
 	PkPlayerStruct back;
 	ok(save_read_hero(playing, &back, NULL, err) && back.pBaseDex == 250,
-	    "  ...and the edit did reach \"hero\", which is what makes it deceptive");
+	    "  ...and the edit reached \"hero\"");
+
+	/* The point of all this: the saved game has to have moved too. */
+	{
+		DWORD glen = 0;
+		int present = 0;
+		BYTE *g = game_read(playing, &glen, &present, err);
+		ok(present && g != NULL, "the saved game still reads back");
+		if (g != NULL) {
+			GameLoc loc;
+			ok(game_locate(g, glen, &back, &loc, err),
+			    "  ...and still verifies against the edited hero");
+			free(g);
+		}
+	}
+
+	/*
+	 * 250 is the case that caught a real bug: the stats are BYTE in the packed
+	 * struct but int32 in the saved game, so reading them as signed turned 250
+	 * into -6 and wrote -6.
+	 */
+	{
+		DWORD glen = 0;
+		int present = 0;
+		BYTE *g = game_read(playing, &glen, &present, err);
+		GameLoc loc;
+		if (g != NULL && game_locate(g, glen, &back, &loc, err)) {
+			const BYTE *rec = g + loc.name;
+			int dex = (int)((DWORD)rec[56] | ((DWORD)rec[57] << 8)
+			    | ((DWORD)rec[58] << 16) | ((DWORD)rec[59] << 24));
+			if (dex != 250)
+				printf("        dexterity came back as %d\n", dex);
+			ok(dex == 250, "a stat above 127 survives unsigned, not as a negative");
+		} else {
+			ok(0, "a stat above 127 survives unsigned");
+		}
+		free(g);
+	}
+
+	/* A present-but-unreadable saved game must fail the commit, not be skipped:
+	 * writing only "hero" is the silent half-edit this exists to prevent. */
+	{
+		char broken[SAVE_PATH_MAX];
+		snprintf(broken, sizeof(broken), "%s", tmppath("single_5.sv"));
+		make_save_ex(broken, &back, /*with_game=*/1);
+		/* Corrupt the archive's game member by truncating the file. */
+		FILE *f = fopen(broken, "rb+");
+		if (f != NULL) {
+			fseek(f, 0, SEEK_END);
+			long sz = ftell(f);
+			fclose(f);
+			truncate(broken, sz - 64);
+		}
+		err[0] = '\0';
+		PkPlayerStruct edit2 = back;
+		edit2.pBaseStr = 44;
+		int wrote = save_commit(broken, &edit2, /*backup=*/0, err);
+		ok(!wrote && err[0] != '\0',
+		    "a damaged saved game fails the commit rather than being skipped");
+		printf("        %s\n", err);
+
+		PkPlayerStruct after2;
+		if (save_read_hero(broken, &after2, NULL, err))
+			ok(after2.pBaseStr != 44, "  ...and \"hero\" was left alone");
+		else
+			ok(1, "  ...and \"hero\" was left alone (unreadable, never written)");
+		remove(broken);
+	}
+
+	/*
+	 * Items are not carried into the saved game, so an edit that moves the
+	 * inventory has to say so. Gold is the case that matters: the game
+	 * recomputes the total from the stacks, which stay as they were.
+	 */
+	{
+		SaveGameSync sync = SAVE_GAME_ABSENT;
+		PkPlayerStruct stats = back;
+		stats.pBaseMag = 60;
+		ok(save_commit_ex(playing, &stats, 0, &sync, err)
+		        && sync == SAVE_GAME_SYNCED,
+		    "a stats-only edit reports a clean sync");
+
+		SaveGameSync sync2 = SAVE_GAME_ABSENT;
+		PkPlayerStruct rich = stats;
+		ok(hero_set_gold(&rich, 50000, err), "give the character gold");
+		ok(save_commit_ex(playing, &rich, 0, &sync2, err)
+		        && sync2 == SAVE_GAME_SYNCED_NO_ITEMS,
+		    "an inventory edit reports that items did not go across");
+	}
+
+	/* A renamed character leaves junk after the terminator in "game" but not in
+	 * "hero"; comparing the whole field would reject a healthy save. */
+	{
+		char tail[SAVE_PATH_MAX];
+		snprintf(tail, sizeof(tail), "%s", tmppath("single_6.sv"));
+		base_hero(&h, "Aidan", PC_WARRIOR);
+		make_save_ex(tail, &h, /*with_game=*/2);
+		DWORD glen = 0;
+		int present = 0;
+		BYTE *g = game_read(tail, &glen, &present, err);
+		GameLoc loc;
+		ok(g != NULL && game_locate(g, glen, &h, &loc, err),
+		    "a stale name tail in the saved game is not treated as a mismatch");
+		free(g);
+		remove(tail);
+	}
 
 	/* Discovery carries the flag through, so both front ends can show it. */
 	SaveEntry found[SAVE_MAX_SLOTS];
