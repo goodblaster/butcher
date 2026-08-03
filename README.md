@@ -245,6 +245,26 @@ broken.json:attributes.strength: error: 300 is outside 0..255; the save stores
 Only JSON has a document to get wrong, so the key and range checks apply to it
 alone; a save or a raw struct gets the character checks only.
 
+### Inspecting a save with a game in progress
+
+```bash
+butcher inspect single_0.hsv
+```
+
+Shows both copies of the character side by side — the packed one the selection
+screen reads, and the one inside the saved game the game loads from — so you
+can check an edit reached both:
+
+```
+saved game: Hellfire, 25 dungeon levels, 80362 bytes decoded
+player record at 243, name at 563 (13 fields agreed)
+
+  field                  offset         saved game    packed copy
+  level                  name+120                3              3
+  experience             name+124          1366227        1366227
+  gold                   name+140              248            248
+```
+
 ### Repairing
 
 ```bash

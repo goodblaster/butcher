@@ -92,6 +92,16 @@ int game_apply(BYTE *buf, DWORD len, const GameLoc *loc, const PkPlayerStruct *h
 /** Encode and replace the "game" member of the archive. */
 int game_write(const char *path, const BYTE *buf, DWORD len, char *err);
 
+/**
+ * Print both copies of every field this module knows, side by side.
+ *
+ * A diagnostic, for the question that keeps coming up: did an edit reach the
+ * saved game, or only the packed copy? Reports raw offsets so a disagreement
+ * can be chased without rebuilding a probe by hand.
+ */
+void game_dump(const BYTE *buf, DWORD len, const GameLoc *loc,
+    const PkPlayerStruct *hero, void *stream);
+
 #ifdef __cplusplus
 }
 #endif

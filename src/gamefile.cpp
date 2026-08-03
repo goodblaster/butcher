@@ -392,6 +392,46 @@ int game_apply(BYTE *buf, DWORD len, const GameLoc *loc, const PkPlayerStruct *h
 	return changed;
 }
 
+void game_dump(const BYTE *buf, DWORD len, const GameLoc *loc,
+    const PkPlayerStruct *hero, void *stream)
+{
+	FILE *out = (FILE *)stream;
+	const BYTE *rec = buf + loc->name;
+
+	fprintf(out, "saved game: %s, %d dungeon levels, %u bytes decoded\n",
+	    loc->hellfire ? "Hellfire" : "Diablo", loc->levels, (unsigned)len);
+	fprintf(out, "player record at %ld, name at %ld (%d fields agreed)\n\n",
+	    loc->name - GAME_NAME_IN_RECORD, loc->name, loc->discriminating);
+	fprintf(out, "  %-22s %-10s %14s %14s\n", "field", "offset", "saved game",
+	    "packed copy");
+
+	for (int i = 0; i < kNumFields; i++) {
+		const Field *f = &kFields[i];
+		const BYTE *hp = (const BYTE *)hero + f->hero_off;
+		char off[16];
+		snprintf(off, sizeof(off), "name%+ld", f->off);
+
+		if (f->kind == F_NAME) {
+			char a[PLR_NAME_LEN + 1], b[PLR_NAME_LEN + 1];
+			snprintf(a, sizeof(a), "%.*s", (int)f->len, (const char *)rec + f->off);
+			snprintf(b, sizeof(b), "%.*s", (int)f->len, (const char *)hp);
+			fprintf(out, "  %-22s %-10s %14s %14s   %s\n", f->name, off, a, b,
+			    strcmp(a, b) == 0 ? "" : "<-- DIFFER");
+			continue;
+		}
+		if (f->kind == F_BYTES) {
+			int same = memcmp(rec + f->off, hp, f->len) == 0;
+			fprintf(out, "  %-22s %-10s %14s %14s   %s\n", f->name, off,
+			    same ? "(same)" : "(differ)", "", same ? "" : "<-- DIFFER");
+			continue;
+		}
+		long long g = game_value(f, rec);
+		long long v = hero_value(f, hero);
+		fprintf(out, "  %-22s %-10s %14lld %14lld   %s\n", f->name, off, g, v,
+		    g == v ? "" : "<-- DIFFER");
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* Archive access                                                      */
 /* ------------------------------------------------------------------ */

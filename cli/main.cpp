@@ -660,6 +660,48 @@ static const char *kind_label(InputKind k)
 }
 
 /* ------------------------------------------------------------------ */
+/* inspect                                                             */
+/* ------------------------------------------------------------------ */
+
+static int cmd_inspect(int argc, char **argv)
+{
+	if (argc != 1) {
+		fprintf(stderr, "usage: butcher inspect <save.sv>\n");
+		return 2;
+	}
+	const char *path = argv[0];
+
+	PkPlayerStruct h;
+	if (!read_or_die(path, &h))
+		return 1;
+
+	char err[MPQ_ERR_LEN] = { 0 };
+	DWORD glen = 0;
+	int present = 0;
+	BYTE *game = game_read(path, &glen, &present, err);
+	if (!present) {
+		printf("%s: no game in progress; the packed character is the only copy\n",
+		    path);
+		return 0;
+	}
+	if (game == NULL) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 1;
+	}
+
+	GameLoc loc;
+	if (!game_locate(game, glen, &h, &loc, err)) {
+		free(game);
+		fprintf(stderr, "butcher: %s\n", err);
+		return 1;
+	}
+
+	game_dump(game, glen, &loc, &h, stdout);
+	free(game);
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* fix                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -1105,6 +1147,12 @@ static int usage(void)
 	    "        total, and spell state the game would correct on load.\n"
 	    "        Refuses to write if the result would still not load.\n"
 	    "\n"
+	    "  butcher inspect <save.sv>\n"
+	    "        Show both copies of the character side by side -- the packed\n"
+	    "        one the selection screen reads, and the one inside a saved\n"
+	    "        game that the game loads from. Use it to check whether an edit\n"
+	    "        reached both.\n"
+	    "\n"
 	    "  butcher export <save.sv> [-o char.json]\n"
 	    "  butcher import <save.sv> -i char.json [--dry-run] [--force]\n"
 	    "        Round-trip the whole character as JSON. Lossless: edit any\n"
@@ -1148,6 +1196,8 @@ int cli_main(int argc, char **argv)
 		return cmd_validate(rest, argv + 2);
 	if (strcmp(argv[1], "fix") == 0)
 		return cmd_fix(rest, argv + 2);
+	if (strcmp(argv[1], "inspect") == 0)
+		return cmd_inspect(rest, argv + 2);
 	if (strcmp(argv[1], "export") == 0)
 		return cmd_export(rest, argv + 2);
 	if (strcmp(argv[1], "import") == 0)
