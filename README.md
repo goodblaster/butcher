@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 590 tests.
+package manager. `make check` builds the tool and runs 602 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -342,27 +342,46 @@ inventory on nearly every inventory action, so writing the cached total lasts
 until you pick up a coin. `--gold` redistributes actual stacks — 5000 per pile,
 so 40 empty cells hold 200,000 — and refuses when there is not enough room.
 
-**Level and experience interact, and experience is the real field.**
-`AddPlrExperience` recomputes the level from experience and calls
-`NextPlrLevel` once per level gained — which is where the rewards are: +5 stat
-points, +128 max life raw (+64 for a Sorcerer), matching mana, and a full heal.
-Writing the level field directly grants none of that *and* leaves the character
-unable to level again. So the TUI's Level slider writes **experience** and lets
-the game award the levels properly; the CLI warns and tells you the `--exp`
-value that does the same.
+**Raising experience does nothing. The game throws it away every tick.**
+`ValidatePlayer`, called from `ProcessPlayers`, does:
 
-**Nothing recomputes the level when a save is loaded.** `AddPlrExperience` is
-the only thing that does, and it runs when you gain experience — so a character
-given level-20 experience stays level 3 in game **until the first kill**, and
-then jumps straight to 20 with every level's rewards at once. This is the
-intended behaviour and not a failed edit, but it does mean loading the game and
-checking the character sheet shows nothing. The Level row says so:
+```c
+if (_pExperience > _pNextExper) _pExperience = _pNextExper;
+```
+
+and `_pNextExper` is `ExpLvlsTbl[_pLevel]` — set by `InitPlayer` from the
+**stored** level when unpacking a character, and carried inside a saved game
+otherwise. So experience worth more than one level above the stored level is
+discarded on the first frame of play, before it can ever be earned. A character
+given level-20 experience stays level 3, and one kill takes it to 4.
+
+So butcher raises the **level**, applying per level exactly what `NextPlrLevel`
+grants: +5 stat points (capped by what the class can still absorb), +129 max
+life in single player (+65 for a Sorcerer), the matching mana bump (+65 for a
+Warrior, +1 for a Barbarian, +129 otherwise), and both refilled. It also writes
+`_pNextExper` into the saved game, without which the new experience would be
+clamped straight back.
 
 ```
-  Level      20   ████████████████████                                  0-50
-  Experience 1,025,154
-   └ in game: level 3 until your next kill, then 20 (+85 pts, +34 life)
+$ butcher set single_0.hsv --level 20
+  level        3 -> 20
+  experience   1814568 -> 1025154
+  statpts      0 -> 85
+  life         53 -> 88
+  max life     54 -> 88
+  mana         31 -> 65
+  max mana     31 -> 65
 ```
+
+A save that already carries unearnable experience is reported by `validate`,
+and `fix --all` writes it down to what the game will actually keep.
+
+**`ValidatePlayer` polices more than experience**, all of it every tick: base
+stats are clamped to the class maxima, each gold stack to `GOLD_MAX_LIMIT`
+(doubled in Hellfire) with `_pGold` recomputed from the stacks, spell levels to
+15, and `_pMemSpells` masked down to spells that have a book. butcher enforces
+the same limits, so anything it writes survives — but it is the reason a value
+edited past a cap silently reverts.
 
 **Names must be unique across saves.** The game resolves a name to the first
 matching save slot, so two characters sharing one makes the other unreachable.
@@ -430,7 +449,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 590 checks |
+| `tests/` | Nine suites, 602 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

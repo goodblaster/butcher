@@ -124,6 +124,24 @@ int hero_get_spell_level(const PkPlayerStruct *h, int spell);
 int hero_set_spell_level(PkPlayerStruct *h, HeroFlavor f, int spell, int level,
     char *err);
 
+/**
+ * Raise the character to @p level the way the game would.
+ *
+ * Setting experience alone does not work. ValidatePlayer runs from
+ * ProcessPlayers on every tick and clamps experience down to _pNextExper,
+ * which InitPlayer derives from the *stored* level -- so experience above one
+ * level's worth is discarded before it can ever be earned. The character has
+ * to be levelled here instead, applying per level what NextPlrLevel grants:
+ * +5 stat points (capped by the class's remaining headroom), a life and mana
+ * bump, and both refilled.
+ *
+ * @return levels gained, or 0 if already at or above @p level.
+ */
+int hero_level_up(PkPlayerStruct *h, HeroFlavor f, int level, char *err);
+
+/** Experience the game will require for the level after @p h's current one. */
+int hero_next_exper(const PkPlayerStruct *h);
+
 /* ---- gold ---- */
 
 /** Sum of every gold stack actually held. This is what the game trusts. */

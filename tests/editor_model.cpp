@@ -177,17 +177,20 @@ static void check_roundtrip(void)
 	ok(ed.Dirty(), "the editor now reports itself modified");
 
 	/*
-	 * The level slider writes experience, not level: NextPlrLevel is what
-	 * grants the stat points and life, and it only runs when the game sees
-	 * experience it has not accounted for.
+	 * The level slider levels the character up. Writing experience alone and
+	 * leaving the level for the game to award does not survive: ValidatePlayer
+	 * clamps experience back down to _pNextExper on the first tick.
 	 */
 	ed.Load(make_entry("/tmp/single_0.sv", h));
 	ok(ed.Compose().pExperience == h.pExperience,
 	    "an untouched level slider leaves experience exactly as it was");
 	ed.level_target = 20;
+	ed.ApplyLevelTarget();
 	PkPlayerStruct raised = ed.Compose();
-	ok(raised.pExperience == hero_exp_for_level(20), "raising it writes experience");
-	ok(raised.pLevel == h.pLevel, "and leaves the stored level for the game to award");
+	ok(raised.pLevel == 20, "raising it writes the level");
+	ok(raised.pExperience == hero_exp_for_level(20), "and the experience to match");
+	ok(raised.pExperience <= hero_next_exper(&raised),
+	    "  ...which is what keeps ValidatePlayer from clamping it away");
 
 	/* Gold rewrites the inventory, so it must not run unless gold changed. */
 	ed.Load(make_entry("/tmp/single_0.sv", h));
@@ -383,62 +386,127 @@ static void check_repair(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* 3d. A level the game has not awarded yet                            */
+/* 3d. Levelling has to survive ValidatePlayer                         */
 /* ------------------------------------------------------------------ */
 
 /*
- * From a bug report: experience was raised, the game showed no change, and the
- * sheet said "Level 20" for a character the game still called level 3.
+ * From three rounds of bug reports: raising a Monk's experience did nothing in
+ * game, and one kill then awarded a single level and five stat points.
  *
- * Both are correct. The slider shows the level the experience is worth;
- * pLevel is what the game has awarded, and nothing recomputes it on load --
- * AddPlrExperience does, on the next kill. The sheet has to show the gap
- * whenever it exists, not only while the slider is being dragged, or reopening
- * the file makes a pending level look like a finished one.
+ * The original design wrote experience and left the level for the game to
+ * award. That cannot work. ValidatePlayer runs from ProcessPlayers on every
+ * tick and does:
+ *
+ *     if (_pExperience > _pNextExper) _pExperience = _pNextExper;
+ *
+ * and _pNextExper is ExpLvlsTbl[_pLevel] -- set by InitPlayer from the stored
+ * level when unpacking, and carried in the saved game otherwise. So experience
+ * worth more than one level above the stored level is discarded on the first
+ * frame, before it can ever be turned into levels.
+ *
+ * The character must therefore be levelled outright, applying per level what
+ * NextPlrLevel grants.
  */
-static void check_pending_level(void)
+static void check_level_up(void)
 {
-	section("3d. a level the game has not awarded yet");
+	section("3d. levelling survives the game's own validation");
 
-	Editor ed;
 	PkPlayerStruct h;
+	char err[HERO_ERR_LEN];
+
+	base_hero(&h, "Jazreth", 3); /* Monk */
+	h.pLevel = 3;
+	h.pExperience = hero_exp_for_level(3);
+	h.pStatPts = 0;
+	int hp0 = h.pMaxHPBase, mana0 = h.pMaxManaBase;
+
+	int gained = hero_level_up(&h, FLAVOR_HELLFIRE, 20, err);
+	ok(gained == 17, "raising a level-3 character to 20 gains 17 levels");
+	ok(h.pLevel == 20, "the level is written, not left for the game");
+	ok(h.pExperience == hero_exp_for_level(20), "with the experience to match");
+
+	/* The invariant that made all of this fail. */
+	ok(h.pExperience <= hero_next_exper(&h),
+	    "experience is at or below _pNextExper, so ValidatePlayer leaves it alone");
+
+	/* NextPlrLevel's rewards, per level. */
+	ok(h.pStatPts == 17 * 5, "five stat points per level");
+	ok(h.pMaxHPBase == hp0 + 17 * 129, "life rises 129 per level in single player");
+	ok(h.pHPBase == h.pMaxHPBase, "and is refilled");
+	ok(h.pMaxManaBase == mana0 + 17 * 129, "mana likewise for a Monk");
+	ok(h.pManaBase == h.pMaxManaBase, "and is refilled");
+	ok(hero_validate(&h, FLAVOR_HELLFIRE, err), "the result validates");
+
+	/* A Sorcerer gains half the life; a Barbarian gains no mana. */
+	PkPlayerStruct s;
+	base_hero(&s, "Jazreth", PC_SORCERER);
+	s.pLevel = 1;
+	int shp = s.pMaxHPBase;
+	hero_level_up(&s, FLAVOR_DIABLO, 2, err);
+	ok(s.pMaxHPBase == shp + 65, "a Sorcerer gains 65 life, not 129");
+
+	/*
+	 * A Barbarian's mana bump is 0, but NextPlrLevel then adds one for single
+	 * player -- so it is 1 per level, not none. Worth pinning: the obvious
+	 * reading of the table is wrong.
+	 */
+	PkPlayerStruct b;
+	base_hero(&b, "Grognak", 5); /* Barbarian */
+	b.pLevel = 1;
+	int bmana = b.pMaxManaBase;
+	hero_level_up(&b, FLAVOR_HELLFIRE, 5, err);
+	ok(b.pMaxManaBase == bmana + 4, "a Barbarian gains only the single-player +1");
+
+	/* Stat points stop at what the class can still absorb. */
+	PkPlayerStruct full;
+	base_hero(&full, "Aidan", PC_WARRIOR);
+	full.pLevel = 1;
+	full.pBaseStr = (BYTE)hero_max_stat(FLAVOR_DIABLO, PC_WARRIOR, 0);
+	full.pBaseMag = (BYTE)hero_max_stat(FLAVOR_DIABLO, PC_WARRIOR, 1);
+	full.pBaseDex = (BYTE)hero_max_stat(FLAVOR_DIABLO, PC_WARRIOR, 2);
+	full.pBaseVit = (BYTE)hero_max_stat(FLAVOR_DIABLO, PC_WARRIOR, 3);
+	hero_level_up(&full, FLAVOR_DIABLO, 10, err);
+	ok(full.pStatPts == 0,
+	    "a character already at every cap is given no points it cannot spend");
+
+	/* Going down is not levelling, and is refused as a no-op. */
+	base_hero(&h, "Jazreth", 3);
+	h.pLevel = 20;
+	ok(hero_level_up(&h, FLAVOR_HELLFIRE, 10, err) == 0,
+	    "lowering the level gains nothing");
+	ok(h.pLevel == 20, "  ...and leaves the character alone");
+
+	/* The sheet drives it through the slider. */
+	Editor ed;
 	base_hero(&h, "Jazreth", 3);
 	h.pLevel = 3;
 	h.pExperience = hero_exp_for_level(3);
+	h.pStatPts = 0;
 	ed.Load(make_entry("/tmp/single_0.hsv", h));
+	ed.level_target = 12;
+	ed.ApplyLevelTarget();
+	ok(ed.statpts == 9 * 5, "moving the slider shows the points on the sheet");
+	ok(ed.hp_max > HERO_TO_WHOLE(h.pMaxHPBase), "  ...and the life");
 
-	ok(ed.level_stored == ed.level_target,
-	    "a settled character has nothing pending");
+	/* Dragging up and back down lands exactly where it started. */
+	ed.level_target = 3;
+	ed.ApplyLevelTarget();
+	ok(ed.statpts == 0 && ed.hp_max == HERO_TO_WHOLE(h.pMaxHPBase),
+	    "  ...and moving it back undoes them exactly");
 
-	/* Raise it the way the sheet does. */
-	ed.level_target = 20;
-	PkPlayerStruct raised = ed.Compose();
-	ok(raised.pExperience == hero_exp_for_level(20), "the slider writes experience");
-	ok(raised.pLevel == 3, "  ...and leaves the level for the game to award");
-
-	/*
-	 * Reopen it, as happens after a save. level_opened now equals
-	 * level_target, so anything keyed on "the slider moved" would go quiet --
-	 * but the gap is still there and still has to be reported.
-	 */
-	ed.Load(make_entry("/tmp/single_0.hsv", raised));
-	ok(ed.level_target == 20, "reopening shows the level the experience is worth");
-	ok(ed.level_stored == 3, "  ...and remembers what the game has actually awarded");
-	ok(ed.level_target != ed.level_stored,
-	    "  ...so the gap is visible without needing the slider to have moved");
-	ok(ed.level_opened == ed.level_target,
-	    "  ...even though the slider counts as untouched");
-
-	/* And hero_check says what will happen, in terms of what to do. */
+	/* Validation must name the real mechanism, not the old wrong one. */
+	base_hero(&h, "Jazreth", 3);
+	h.pLevel = 3;
+	h.pExperience = hero_exp_for_level(20); /* the state that never worked */
 	DiagList dl;
 	dl_init(&dl);
-	hero_check(&raised, FLAVOR_HELLFIRE, &dl);
-	int mentions_kill = 0;
+	hero_check(&h, FLAVOR_HELLFIRE, &dl);
+	int names_clamp = 0;
 	for (int i = 0; i < dl.n; i++)
-		if (strstr(dl.items[i].msg, "kill") != NULL)
-			mentions_kill = 1;
-	ok(dl_count(&dl, DIAG_WARNING) > 0 && mentions_kill,
-	    "validation names the trigger rather than saying \"on gaining experience\"");
+		if (strstr(dl.items[i].msg, "ValidatePlayer") != NULL)
+			names_clamp = 1;
+	ok(dl_count(&dl, DIAG_WARNING) > 0 && names_clamp,
+	    "validation says the game will clamp it, not that it will be awarded");
 	dl_free(&dl);
 }
 
@@ -490,7 +558,7 @@ int main(void)
 	check_caps();
 	check_spell_flavor();
 	check_repair();
-	check_pending_level();
+	check_level_up();
 	check_names();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

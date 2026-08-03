@@ -37,6 +37,7 @@
 #ifndef BUTCHER_GAMEFILE_H
 #define BUTCHER_GAMEFILE_H
 
+#include "hero.h"
 #include "savefile.h"
 
 #ifdef __cplusplus

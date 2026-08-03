@@ -201,12 +201,85 @@ int hero_max_mana(HeroFlavor f, int pclass)
 	if (pclass == PC_WARRIOR)
 		per_level = 64 + 1;
 	else if (pclass == 5 /* Barbarian */)
-		per_level = 0; /* a Barbarian gains no mana with levels */
+		per_level = 0 + 1; /* the table says 0, but single player still adds one */
 	else
 		per_level = 128 + 1;
 	raw += per_level * (hero_max_level() - 1);
 
 	return raw >> HERO_FIXED_SHIFT;
+}
+
+/**
+ * Source/player.cpp CalcStatDiff -- how many points the class can still take.
+ * NextPlrLevel uses it to stop handing out points a character cannot spend.
+ */
+static int stat_headroom(const PkPlayerStruct *h, HeroFlavor f)
+{
+	int total = 0;
+	const BYTE *base[4] = { &h->pBaseStr, &h->pBaseMag, &h->pBaseDex, &h->pBaseVit };
+	for (int i = 0; i < 4; i++) {
+		int room = hero_max_stat(f, h->pClass, i) - (int)*base[i];
+		if (room > 0)
+			total += room;
+	}
+	return total;
+}
+
+int hero_next_exper(const PkPlayerStruct *h)
+{
+	/* _pNextExper is ExpLvlsTbl[_pLevel], i.e. what the next level costs. */
+	return hero_exp_for_level(h->pLevel + 1);
+}
+
+int hero_level_up(PkPlayerStruct *h, HeroFlavor f, int level, char *err)
+{
+	if (level < 1 || level > hero_max_level()) {
+		seterr(err, "level must be 1..%d", hero_max_level());
+		return 0;
+	}
+	if (level <= h->pLevel)
+		return 0;
+
+	int gained = 0;
+	while (h->pLevel < level) {
+		/*
+		 * Source/player.cpp NextPlrLevel, once per level. Single player, so
+		 * each bump is one larger than the multiplayer figure.
+		 */
+		int diff = stat_headroom(h, f);
+		int pts = (int)h->pStatPts;
+		if (diff < 5)
+			pts = diff; /* a set, not an add -- the game does the same */
+		else
+			pts += 5;
+		if (pts < 0)
+			pts = 0;
+		if (pts > 255)
+			pts = 255; /* the packed field is a byte */
+		h->pStatPts = (BYTE)pts;
+
+		int hp = (h->pClass == PC_SORCERER ? 64 : 128) + 1;
+		h->pMaxHPBase += hp;
+		h->pHPBase = h->pMaxHPBase;
+
+		int mana;
+		if (h->pClass == PC_WARRIOR)
+			mana = 64;
+		else if (h->pClass == 5 /* Barbarian */)
+			mana = 0;
+		else
+			mana = 128;
+		mana += 1;
+		h->pMaxManaBase += mana;
+		h->pManaBase = h->pMaxManaBase;
+
+		h->pLevel++;
+		gained++;
+	}
+
+	/* The experience the game expects a character of this level to hold. */
+	h->pExperience = hero_exp_for_level(level);
+	return gained;
 }
 
 /* ------------------------------------------------------------------ */
@@ -704,12 +777,14 @@ void hero_check(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl)
 			    hero_exp_for_level(h->pLevel + 1), hero_exp_for_level(h->pLevel));
 		else if (implied > h->pLevel)
 			dl_add(dl, DIAG_WARNING, "level",
-			    "%d, but experience %d is worth level %d. Nothing recomputes "
-			    "this when a save is loaded -- the character stays level %d "
-			    "until AddPlrExperience next runs, which is your first kill. "
-			    "Then all %d levels are awarded at once, with their stat points "
-			    "and life",
-			    h->pLevel, h->pExperience, implied, h->pLevel, implied - h->pLevel);
+			    "%d, but experience %d is worth level %d -- and the game will "
+			    "throw the difference away. ValidatePlayer runs every tick and "
+			    "clamps experience down to %d, what level %d needs for its next "
+			    "level, so this reverts on the first frame of play. Raise the "
+			    "level itself instead (--level %d), which grants the stat "
+			    "points and life that come with it",
+			    h->pLevel, h->pExperience, implied, hero_next_exper(h), h->pLevel,
+			    implied);
 	}
 
 	if (f == FLAVOR_HELLFIRE) {
@@ -1088,6 +1163,26 @@ int hero_fix(PkPlayerStruct *h, HeroFlavor f, int settle_warnings, DiagList *log
 		    h->_pNumInv);
 		h->InvGrid[i] = 0;
 		changed++;
+	}
+
+	/*
+	 * Experience the game will not honour. ValidatePlayer clamps it down to
+	 * _pNextExper on the first tick, so a save carrying more is describing a
+	 * character that will not exist. Doing it here makes the file say what the
+	 * game will actually produce -- raising the level instead is a gameplay
+	 * decision, not a repair, and hero_check names the command for it.
+	 */
+	if (settle_warnings) {
+		int cap = hero_next_exper(h);
+		if (h->pExperience > cap) {
+			dl_add(log, DIAG_NOTE, "experience",
+			    "%d is more than level %d can hold; the game clamps it to %d on "
+			    "load, so that is what it now says. Use --level to raise the "
+			    "level for real",
+			    h->pExperience, h->pLevel, cap);
+			h->pExperience = cap;
+			changed++;
+		}
 	}
 
 	/* ---- gold ---- */

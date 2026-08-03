@@ -142,6 +142,16 @@ static const Field kFields[] = {
 
 static const int kNumFields = (int)(sizeof(kFields) / sizeof(kFields[0]));
 
+/**
+ * Two fields with no counterpart in the packed struct, so they cannot be
+ * verified against it and are written from derived values instead.
+ * Offsets confirmed on both real saves: _pNextExper read 8040 for the level-3
+ * Monk and 5459523 for the level-25 Rogue, which are ExpLvlsTbl[3] and
+ * ExpLvlsTbl[25] exactly.
+ */
+#define GAME_MAXLVL_OFF 121  /**< _pMaxLvl, the char after _pLevel */
+#define GAME_NEXTEXP_OFF 132 /**< _pNextExper */
+
 /** Lowest and highest byte the table touches, relative to _pName. */
 #define GAME_SPAN_LO (-127)
 #define GAME_SPAN_HI (144)
@@ -357,6 +367,24 @@ int game_apply(BYTE *buf, DWORD len, const GameLoc *loc, const PkPlayerStruct *h
 	(void)len;
 	BYTE *rec = buf + loc->name;
 	int changed = 0;
+
+	/*
+	 * Two fields the packed copy does not carry, so they are derived rather
+	 * than copied.
+	 *
+	 * _pNextExper matters more than it looks. ValidatePlayer runs every tick
+	 * and clamps _pExperience down to it, so leaving it stale would undo the
+	 * experience being written here on the first frame of play.
+	 */
+	if (rd32(rec + GAME_NEXTEXP_OFF) != hero_next_exper(hero)) {
+		wr32(rec + GAME_NEXTEXP_OFF, hero_next_exper(hero));
+		changed++;
+	}
+	/* _pMaxLvl is the highest level reached; NextPlrLevel raises it in step. */
+	if ((signed char)rec[GAME_MAXLVL_OFF] < hero->pLevel) {
+		rec[GAME_MAXLVL_OFF] = (BYTE)hero->pLevel;
+		changed++;
+	}
 
 	for (int i = 0; i < kNumFields; i++) {
 		const Field *f = &kFields[i];

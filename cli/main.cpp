@@ -339,7 +339,22 @@ static int cmd_set(int argc, char **argv)
 			h.pClass = (char)n;
 		} else if (strcmp(o, "--level") == 0) {
 			NEEDINT();
-			h.pLevel = (char)n;
+			/*
+			 * A real level-up, not just the number: NextPlrLevel grants stat
+			 * points, life and mana per level, and a character raised without
+			 * them is one the game will never make whole. Lowering is left as
+			 * a plain write -- the game does not take levels back, but nothing
+			 * stops a save holding a lower one.
+			 */
+			if (n > h.pLevel) {
+				char lerr[HERO_ERR_LEN];
+				if (!hero_level_up(&h, flavor, n, lerr)) {
+					fprintf(stderr, "--level: %s\n", lerr);
+					return 2;
+				}
+			} else {
+				h.pLevel = (char)n;
+			}
 		} else if (strcmp(o, "--exp") == 0) {
 			NEEDINT();
 			h.pExperience = n;

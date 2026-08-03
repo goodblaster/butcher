@@ -117,8 +117,15 @@ struct Editor {
 		mana_max = HERO_TO_WHOLE(src.pMaxManaBase);
 		dlvl = src.plrlevel;
 
+		/*
+		 * The slider is the character's level, not the level its experience is
+		 * worth. Those differ only on a save carrying experience the game will
+		 * clamp away, and showing the higher figure made such a save look like
+		 * a level-20 character when the game calls it level 3. The mismatch is
+		 * reported by hero_check instead.
+		 */
 		level_stored = src.pLevel;
-		level_target = hero_level_for_exp(src.pExperience);
+		level_target = src.pLevel;
 		level_opened = level_target;
 
 		gold = hero_gold_in_stacks(&src);
@@ -156,12 +163,17 @@ struct Editor {
 		h.plrlevel = (BYTE)dlvl;
 
 		/*
-		 * Only rewrite experience once the level slider has moved. Snapping to
-		 * a level threshold discards progress within the level, so opening a
-		 * character and touching nothing must leave it byte-identical.
+		 * The level itself, once the slider has moved. Writing experience and
+		 * leaving the level for the game to award does not work: ValidatePlayer
+		 * runs every tick and clamps experience back down to _pNextExper, which
+		 * is derived from the stored level. The rewards that come with each
+		 * level were applied to the sliders by ApplyLevelTarget, so all that is
+		 * left here is the level and the experience to match it.
 		 */
-		if (level_target != level_opened)
+		if (level_target > level_stored) {
+			h.pLevel = (char)level_target;
 			h.pExperience = hero_exp_for_level(level_target);
+		}
 
 		/*
 		 * Only spells this save's game defines. The pane is built once and
@@ -218,6 +230,32 @@ struct Editor {
 	{
 		original = h;
 		Adopt(h);
+	}
+
+	/**
+	 * Recompute what a level change grants, and show it on the sheet.
+	 *
+	 * Levelling is not just a number: NextPlrLevel hands out stat points, life
+	 * and mana per level. Those have to appear on the sliders as the level
+	 * moves, or the sheet would show a level-20 character with level-3 vitals
+	 * and only reveal the difference after saving.
+	 *
+	 * Always recomputed from `original`, so dragging the slider up and back
+	 * down lands exactly where it started.
+	 */
+	void ApplyLevelTarget()
+	{
+		PkPlayerStruct t = original;
+		if (level_target > t.pLevel) {
+			char err[HERO_ERR_LEN];
+			hero_level_up(&t, entry.flavor, level_target, err);
+		}
+		statpts = t.pStatPts;
+		hp = HERO_TO_WHOLE(t.pHPBase);
+		hp_max = HERO_TO_WHOLE(t.pMaxHPBase);
+		mana = HERO_TO_WHOLE(t.pManaBase);
+		mana_max = HERO_TO_WHOLE(t.pMaxManaBase);
+		RefreshCaps();
 	}
 };
 

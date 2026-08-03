@@ -371,7 +371,15 @@ int tui_main(int argc, char **argv)
 	auto slider_vit = Slider(SliderOption<int> { &ed.vit, 0, &ed.cap_vit, 1 });
 	int cap_stat_pts = 255, cap_level = hero_max_level();
 	auto slider_pts = Slider(SliderOption<int> { &ed.statpts, 0, &cap_stat_pts, 1 });
-	auto slider_lvl = Slider(SliderOption<int> { &ed.level_target, 1, &cap_level, 1 });
+	/*
+	 * The floor is the stored level: the game never takes a level back, so
+	 * offering to lower one would promise something it cannot do. on_change
+	 * applies the level's rewards to the other sliders as it moves.
+	 */
+	SliderOption<int> lvl_opt { &ed.level_target, 1, &cap_level, 1 };
+	lvl_opt.min = &ed.level_stored;
+	lvl_opt.on_change = [&ed] { ed.ApplyLevelTarget(); };
+	auto slider_lvl = Slider(lvl_opt);
 	auto slider_hp = Slider(SliderOption<int> { &ed.hp, 1, &ed.hp_max, 1 });
 	auto slider_hpmax = Slider(SliderOption<int> { &ed.hp_max, 1, &ed.cap_life, 1 });
 	auto slider_mana = Slider(SliderOption<int> { &ed.mana, 0, &ed.mana_max, 1 });
@@ -444,30 +452,23 @@ int tui_main(int argc, char **argv)
 		rows.push_back(text(exp_line));
 
 		/*
-		 * The slider shows the level the experience is worth; the game shows
-		 * the level it has actually awarded, and only catches up when
-		 * AddPlrExperience next runs -- on a kill. Say so whenever the two
-		 * disagree, not just while the slider is being moved. Hiding it after
-		 * a save left the sheet reading "Level 20" for a character the game
-		 * still calls level 3, which reads as the edit having failed.
+		 * Levelling is applied outright, so the note reports what was granted
+		 * rather than what is pending. It used to promise the game would award
+		 * the levels on the next kill; it never would -- ValidatePlayer clamps
+		 * experience back down every tick.
 		 */
 		int gained = ed.level_target - ed.level_stored;
 		if (gained > 0) {
-			/* NextPlrLevel pays out per level: +5 stat points and a
-			 * class-dependent life bump, on the next experience gained. */
 			int hp_per = (ed.cls == PC_SORCERER ? 64 : 128) + 1;
-			rows.push_back(text("   └ in game: level "
-			                  + std::to_string(ed.level_stored) + " until your next kill, "
-			                  + "then " + std::to_string(ed.level_target) + " (+"
-			                  + std::to_string(gained * 5) + " pts, +"
+			int mana_per = (ed.cls == PC_WARRIOR ? 64 : ed.cls == 5 ? 0 : 128) + 1;
+			rows.push_back(text("   └ levels " + std::to_string(ed.level_stored + 1)
+			                  + "-" + std::to_string(ed.level_target) + " granted: +"
+			                  + std::to_string(ed.statpts) + " pts, +"
 			                  + std::to_string((gained * hp_per) >> HERO_FIXED_SHIFT)
-			                  + " life)")
+			                  + " life, +"
+			                  + std::to_string((gained * mana_per) >> HERO_FIXED_SHIFT)
+			                  + " mana")
 			    | color(Color::Cyan));
-		} else if (gained < 0) {
-			rows.push_back(text("   └ in game still level "
-			                  + std::to_string(ed.level_stored)
-			                  + "; the game never takes levels back")
-			    | color(Color::Yellow));
 		}
 
 		rows.push_back(separator());
