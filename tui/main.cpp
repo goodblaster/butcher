@@ -220,6 +220,7 @@ int tui_main(int argc, char **argv)
 			e.name[PLR_NAME_LEN] = '\0';
 			e.slot = 0;
 			e.flavor = save_flavor_of(arg);
+			e.in_progress = save_has_game(arg);
 			e.hero = h;
 			nsaves = 1;
 		}
@@ -297,10 +298,18 @@ int tui_main(int argc, char **argv)
 	/* ---- picker ---- */
 	std::vector<std::string> picker_items;
 	for (const auto &s : saves) {
-		picker_items.push_back(Pad(s.name, 20) + Pad(hero_flavor_name(s.flavor), 10)
+		/* The "!" marks a save whose character the game loads from "game"
+		 * rather than from the "hero" this edits. */
+		picker_items.push_back(std::string(s.in_progress ? "! " : "  ")
+		    + Pad(s.name, 18) + Pad(hero_flavor_name(s.flavor), 10)
 		    + Pad(hero_class_name(s.flavor, s.hero.pClass), 11) + "lvl "
 		    + Pad(std::to_string(s.hero.pLevel), 4) + Commas(s.hero.pGold) + " gold");
 	}
+	bool any_in_progress = false;
+	for (const auto &s2 : saves)
+		if (s2.in_progress)
+			any_in_progress = true;
+
 	auto picker_menu = Menu(&picker_items, &picked);
 	auto picker = Renderer(picker_menu, [&] {
 		return vbox({
@@ -309,6 +318,11 @@ int tui_main(int argc, char **argv)
 		           separator(),
 		           picker_menu->Render() | frame | flex,
 		           separator(),
+		           any_in_progress
+		               ? text(" ! has a game in progress -- the game loads its own "
+		                      "copy over any edit ")
+		                   | color(Color::Yellow)
+		               : text(""),
 		           text(" ↑↓ choose · enter open · q quit ") | dim,
 		       })
 		    | border;
@@ -639,6 +653,16 @@ int tui_main(int argc, char **argv)
 		            | dim,
 		    }),
 		    text(std::string(" ") + ed.entry.path) | dim,
+		    /*
+		     * A game in progress means the character is stored twice, and the
+		     * copy this edits is not the one the game loads from. Editing here
+		     * would show on the character-selection screen and then vanish, so
+		     * it has to be said before any keys are pressed, not on save.
+		     */
+		    ed.entry.in_progress
+		        ? hbox({ text(" ! game in progress: the game loads over these edits ")
+		                     | color(Color::Black) | bgcolor(Color::Yellow) })
+		        : text(""),
 		    separator(),
 		    tab_bar->Render(),
 		    separator(),

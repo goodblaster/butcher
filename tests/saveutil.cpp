@@ -97,7 +97,7 @@ static void base_hero(PkPlayerStruct *p, const char *name, int pclass)
 }
 
 /** Write a one-file save archive containing this character. */
-static int make_save(const char *path, const PkPlayerStruct *hero)
+static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_game)
 {
 	BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
@@ -129,10 +129,38 @@ static int make_save(const char *path, const PkPlayerStruct *hero)
 	hash[idx].lcid = 0;
 	hash[idx].block = 0;
 
+	DWORD total = offs[1];
+	if (with_game) {
+		/*
+		 * A "game" member marks a save the game will load its own copy of the
+		 * player from. The contents do not matter here -- only that the name
+		 * resolves, which is what save_has_game looks for.
+		 */
+		static const char kGame[] = "not a real saved game";
+		DWORD gstart = total;
+		DWORD *goffs = (DWORD *)(body + gstart);
+		goffs[0] = 8;
+		goffs[1] = 8 + (DWORD)sizeof(kGame);
+		memcpy(body + gstart + 8, kGame, sizeof(kGame));
+
+		block[1].offset = (int)(MPQ_DATA_OFFSET + gstart);
+		block[1].sizealloc = (int)goffs[1];
+		block[1].sizefile = (int)sizeof(kGame);
+		block[1].flags = (int)MPQ_FLAG_EXISTS;
+		DWORD gi = Hash("game", 0) & 0x7FF;
+		while (hash[gi].block != -1)
+			gi = (gi + 1) & 0x7FF;
+		hash[gi].hashcheck[0] = (int)Hash("game", 1);
+		hash[gi].hashcheck[1] = (int)Hash("game", 2);
+		hash[gi].lcid = 0;
+		hash[gi].block = 1;
+		total = gstart + goffs[1];
+	}
+
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.signature = (int)MPQ_SIGNATURE;
 	hdr.headersize = 32;
-	hdr.filesize = (int)(MPQ_DATA_OFFSET + offs[1]);
+	hdr.filesize = (int)(MPQ_DATA_OFFSET + total);
 	hdr.sectorsizeid = 3;
 	hdr.hashoffset = MPQ_HASH_OFFSET;
 	hdr.blockoffset = MPQ_BLOCK_OFFSET;
@@ -147,7 +175,7 @@ static int make_save(const char *path, const PkPlayerStruct *hero)
 		fwrite(&hdr, sizeof(hdr), 1, f);
 		fwrite(block, MPQ_INDEX_ENTRIES * sizeof(_BLOCKENTRY), 1, f);
 		fwrite(hash, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY), 1, f);
-		fwrite(body, offs[1], 1, f);
+		fwrite(body, total, 1, f);
 		fclose(f);
 		chmod(path, 0644);
 		rc = 0;
@@ -155,6 +183,75 @@ static int make_save(const char *path, const PkPlayerStruct *hero)
 	free(block);
 	free(hash);
 	return rc;
+}
+
+static int make_save(const char *path, const PkPlayerStruct *hero)
+{
+	return make_save_ex(path, hero, /*with_game=*/0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 0. Games in progress                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * From a real report: a Rogue's dexterity was edited, showed correctly on the
+ * character-selection screen, and was back to its old value once the game
+ * started. The character is stored twice. "hero" is the packed struct this
+ * tool edits and the selection screen displays; "game" holds a full
+ * PlayerStruct, and choosing that character runs LoadGame -> LoadPlayer, which
+ * overwrites the player from it (DevilutionX Source/loadsave.cpp).
+ *
+ * butcher cannot edit the "game" copy, so the least it can do is say so. An
+ * edit that is visible but not effective is the worst way for this to fail.
+ */
+static void check_game_in_progress(void)
+{
+	section("0. saves holding a game in progress");
+
+	PkPlayerStruct h;
+	base_hero(&h, "Aidan", PC_WARRIOR);
+
+	/* tmppath returns a static buffer, so each path needs its own copy. */
+	char plain[SAVE_PATH_MAX], playing[SAVE_PATH_MAX];
+	snprintf(plain, sizeof(plain), "%s", tmppath("single_3.sv"));
+	snprintf(playing, sizeof(playing), "%s", tmppath("single_4.sv"));
+	make_save_ex(plain, &h, /*with_game=*/0);
+	base_hero(&h, "Moreina", PC_ROGUE);
+	make_save_ex(playing, &h, /*with_game=*/1);
+
+	ok(!save_has_game(plain), "a save with no game in progress is not flagged");
+	ok(save_has_game(playing), "one that holds a game is");
+
+	/* It has to survive a write, or the flag would vanish on the first edit. */
+	char err[MPQ_ERR_LEN];
+	PkPlayerStruct edited;
+	ok(save_read_hero(playing, &edited, NULL, err), "the flagged save still reads");
+	edited.pBaseDex = 250;
+	ok(save_commit(playing, &edited, /*backup=*/0, err), "and still writes");
+	ok(save_has_game(playing),
+	    "the game file survives a rewrite, so the warning does not disappear");
+
+	PkPlayerStruct back;
+	ok(save_read_hero(playing, &back, NULL, err) && back.pBaseDex == 250,
+	    "  ...and the edit did reach \"hero\", which is what makes it deceptive");
+
+	/* Discovery carries the flag through, so both front ends can show it. */
+	SaveEntry found[SAVE_MAX_SLOTS];
+	char dir[SAVE_PATH_MAX];
+	snprintf(dir, sizeof(dir), "%s", g_tmpdir);
+	int n = save_scan_dir(dir, found, SAVE_MAX_SLOTS);
+	int saw_plain = 0, saw_playing = 0;
+	for (int i = 0; i < n; i++) {
+		if (strcmp(found[i].name, "Aidan") == 0 && !found[i].in_progress)
+			saw_plain = 1;
+		if (strcmp(found[i].name, "Moreina") == 0 && found[i].in_progress)
+			saw_playing = 1;
+	}
+	ok(saw_plain && saw_playing, "scanning a directory reports it per save");
+
+	remove(plain);
+	remove(playing);
 }
 
 /* ------------------------------------------------------------------ */
@@ -469,6 +566,7 @@ int main(void)
 
 	printf("butcher -- shared save utilities\n");
 
+	check_game_in_progress();
 	check_discovery();
 	check_backup();
 	check_commit();

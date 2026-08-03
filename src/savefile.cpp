@@ -822,6 +822,17 @@ int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 	return r;
 }
 
+int save_has_game(const char *path)
+{
+	char err[MPQ_ERR_LEN];
+	MpqArchive *a = mpq_open(path, err);
+	if (a == NULL)
+		return 0;
+	int has = mpq_has_file(a, "game");
+	mpq_close(a);
+	return has;
+}
+
 int save_read_hero(const char *path, PkPlayerStruct *out, int *used_multi, char *err)
 {
 	if (used_multi != NULL)

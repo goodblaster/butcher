@@ -81,6 +81,7 @@ int save_scan_dir(const char *dir, SaveEntry *out, int max)
 			s->name[PLR_NAME_LEN] = '\0';
 			s->slot = i;
 			s->flavor = hero_flavor_for_path(path);
+			s->in_progress = save_has_game(path);
 			s->hero = h;
 		}
 	}

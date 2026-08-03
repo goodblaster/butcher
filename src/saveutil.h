@@ -20,6 +20,11 @@ typedef struct SaveEntry {
 	char name[PLR_NAME_LEN + 1];
 	int slot;
 	HeroFlavor flavor;
+	/**
+	 * The archive holds a game in progress, so the character it loads comes
+	 * from "game" rather than from the "hero" this edits. See save_has_game.
+	 */
+	int in_progress;
 	PkPlayerStruct hero;
 } SaveEntry;
 

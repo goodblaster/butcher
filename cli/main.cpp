@@ -21,6 +21,31 @@ static void warn_line(const char *msg)
 	fprintf(stderr, "warning: %s\n", msg);
 }
 
+/**
+ * Say so when the save holds a game in progress.
+ *
+ * The character-selection screen is drawn from `hero`, which is what this tool
+ * edits, so an edit appears there and looks applied. Loading the character
+ * then runs LoadGame, which overwrites the player from the `game` file. The
+ * edit is visible but not effective -- worth a loud warning rather than
+ * letting someone conclude the tool silently does nothing.
+ */
+static void warn_if_game_in_progress(const char *path)
+{
+	if (!save_has_game(path))
+		return;
+	fprintf(stderr,
+	    "\nwarning: %s holds a game in progress, so this edit will NOT take "
+	    "effect.\n"
+	    "  A save carries the character twice. \"hero\" is what butcher edits and\n"
+	    "  what the character-selection screen displays. \"game\" carries a second,\n"
+	    "  complete copy, and picking the character runs LoadGame, which\n"
+	    "  overwrites the player from it (Source/loadsave.cpp).\n"
+	    "  So the change will appear on the selection screen and then be gone\n"
+	    "  once you are in the dungeon. butcher cannot edit the \"game\" copy yet.\n",
+	    path);
+}
+
 
 
 
@@ -129,6 +154,7 @@ static int cmd_show(int argc, char **argv)
 	if (!hero_validate(&h, f, err))
 		fprintf(stderr, "\nwarning: this character is already out of range: %s\n", err);
 	hero_warnings(&h, f, warn_line);
+	warn_if_game_in_progress(argv[0]);
 	return 0;
 }
 
@@ -207,6 +233,7 @@ static int commit(const char *path, const PkPlayerStruct *h, HeroFlavor f, int b
 	}
 	printf("saved.\n");
 	hero_warnings(h, f, warn_line);
+	warn_if_game_in_progress(path);
 	return 0;
 }
 

@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 559 tests.
+package manager. `make check` builds the tool and runs 566 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -276,6 +276,37 @@ would still not load, nothing is written and it says so.
 One case is a guess and says so loudly: a class the game does not have has no
 recoverable original, so it resets to Warrior and tells you to set it yourself.
 
+## Two things that will make an edit look like it did nothing
+
+Read these before concluding the tool is broken. Both cost real debugging time.
+
+### A game in progress overrides everything
+
+**A save stores the character twice.** `hero` is the packed struct butcher
+edits, and it is what the character-selection screen displays. `game` — present
+whenever a game is in progress — holds a second, complete copy. Choosing the
+character runs `LoadGame`, which calls `LoadPlayer` and overwrites the player
+from `game` (DevilutionX `Source/loadsave.cpp`).
+
+So an edit to such a save **shows on the selection screen and is gone once you
+are in the dungeon**. Visible, but not effective.
+
+butcher cannot edit the `game` copy yet. It does detect the situation and say
+so everywhere it matters: `list` and the picker mark those saves with `!`, the
+character sheet carries a banner, and `show`/`set` warn. `butcher show <save>`
+tells you outright.
+
+### Diablo and Hellfire never see each other's saves
+
+The game picks the extension from which one it is running: `.sv` for Diablo,
+`.hsv` for Hellfire (`GetSavePath`). The character list only ever scans one of
+them, so a Diablo character is **invisible** while the game is in Hellfire mode,
+and vice versa. Nothing is wrong with the file.
+
+DevilutionX switches to Hellfire automatically if it finds `hellfire.mpq` beside
+`DIABDAT.MPQ` (`Source/init.cpp`), which is easy to forget you set up. Launch it
+with `--diablo` to force Diablo mode, or move `hellfire.mpq` aside.
+
 ## Things the game does that will surprise you
 
 These are the reasons this tool exists rather than a hex editor.
@@ -360,7 +391,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 559 checks |
+| `tests/` | Nine suites, 566 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

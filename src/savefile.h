@@ -75,6 +75,23 @@ BYTE *mpq_read_file(MpqArchive *a, const char *name, DWORD *out_len, char *err);
 int save_read_hero(const char *path, PkPlayerStruct *out, int *used_multi, char *err);
 
 /**
+ * @return nonzero if the archive holds a saved game in progress.
+ *
+ * This matters more than it looks. A save carries the character twice: `hero`
+ * is the packed PkPlayerStruct this tool edits, and `game` -- present only
+ * while a game is in progress -- carries a full PlayerStruct of its own.
+ *
+ * The character-selection screen is built from `hero`, so an edit shows up
+ * there. But picking that character runs LoadGame, which calls LoadPlayer and
+ * overwrites the player from `game` (Source/loadsave.cpp). Every edit to
+ * `hero` is discarded the moment play starts.
+ *
+ * So an edit to a save in this state is visible but not effective, which is
+ * the worst way for a tool to fail. Callers must say so.
+ */
+int save_has_game(const char *path);
+
+/**
  * Replace one existing file inside an archive.
  *
  * The archive is rebuilt into a temporary file and renamed over the original
