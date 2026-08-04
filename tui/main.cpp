@@ -13,6 +13,7 @@
  *   butcher <save> --render       draw one frame and exit (no terminal needed)
  *   butcher <save> --tab N        select a pane before rendering
  *   butcher <save> --focus N      place the cursor before rendering
+ *   butcher <dir>  --new          open the create form before rendering
  */
 #include "../src/charjson.h"
 #include "../src/format.h"
@@ -311,21 +312,86 @@ int tui_main(int argc, char **argv)
 			any_in_progress = true;
 
 	auto picker_menu = Menu(&picker_items, &picked);
-	auto picker = Renderer(picker_menu, [&] {
-		return vbox({
-		           text(" butcher ") | bold,
-		           text(std::string(" ") + used_dir) | dim,
-		           separator(),
-		           picker_menu->Render() | frame | flex,
-		           separator(),
-		           any_in_progress
-		               ? text(" ! has a game in progress; edits are applied to the "
-		                      "saved game too ")
-		                   | color(Color::Cyan)
-		               : text(""),
-		           text(" ↑↓ choose · enter open · q quit ") | dim,
-		       })
+
+	/* ---- new character, from the list screen ---- */
+	bool creating = false;
+	int creating_tab = 0;
+	std::string new_name;
+	int new_class = 0;
+	int new_flavor = 0; /* 0 Diablo, 1 Hellfire */
+	std::string new_error;
+	std::vector<std::string> flavor_names { "Diablo", "Hellfire" };
+	std::vector<std::string> new_class_names;
+
+	auto new_flavor_of = [&] { return new_flavor == 1 ? FLAVOR_HELLFIRE : FLAVOR_DIABLO; };
+	auto reload_new_classes = [&] {
+		new_class_names.clear();
+		for (int i = 0; i < hero_num_classes(new_flavor_of()); i++)
+			new_class_names.push_back(hero_class_name(new_flavor_of(), i));
+		/* Diablo has three; switching down from a Hellfire class must not
+		 * leave the selection past the end. */
+		if (new_class >= (int)new_class_names.size())
+			new_class = 0;
+	};
+	reload_new_classes();
+
+	int new_cursor = 0;
+	InputOption new_name_opt = InputOption::Default();
+	new_name_opt.multiline = false;
+	new_name_opt.cursor_position = &new_cursor;
+	new_name_opt.on_change = [&] { new_name = editor_sanitize_name(new_name); };
+	auto new_name_input = Input(&new_name, "name", new_name_opt);
+	auto new_flavor_pick = Radiobox(&flavor_names, &new_flavor);
+	auto new_class_pick = Radiobox(&new_class_names, &new_class);
+
+	auto create_form = Container::Vertical({
+	    NavEscape(new_name_input),
+	    new_flavor_pick,
+	    new_class_pick,
+	});
+
+	auto picker_body = Container::Tab({ picker_menu, create_form }, &creating_tab);
+
+	auto picker = Renderer(picker_body, [&] {
+		Element list = vbox({
+		                   text(" butcher ") | bold,
+		                   text(std::string(" ") + used_dir) | dim,
+		                   separator(),
+		                   picker_menu->Render() | frame | flex,
+		                   separator(),
+		                   any_in_progress
+		                       ? text(" ! has a game in progress; edits are applied "
+		                              "to the saved game too ")
+		                           | color(Color::Cyan)
+		                       : text(""),
+		                   text(" ↑↓ choose · enter open · n new · q quit ") | dim,
+		               })
 		    | border;
+
+		if (!creating)
+			return list;
+
+		reload_new_classes();
+		Element form = vbox({
+		                   text(" New character ") | bold,
+		                   separator(),
+		                   hbox({ text("  Name   "), new_name_input->Render() | flex }),
+		                   hbox({ text("  Game   "), new_flavor_pick->Render() }),
+		                   hbox({ text("  Class  "), new_class_pick->Render() }),
+		                   separator(),
+		                   text("  no equipment -- the game builds starting gear")
+		                       | dim,
+		                   text("  from item seeds, which cannot be made here.")
+		                       | dim,
+		                   text("  give it gold on the sheet and buy some.") | dim,
+		                   new_error.empty()
+		                       ? text("")
+		                       : paragraph("  " + new_error) | color(Color::Red),
+		                   separator(),
+		                   text(" enter create · esc cancel ") | dim,
+		               })
+		    | border | bgcolor(Color::Black);
+		return dbox({ list, form | center });
 	});
 
 	/* ---- attributes pane ---- */
@@ -805,6 +871,95 @@ int tui_main(int argc, char **argv)
 		}
 
 		if (screen_index == 0) {
+			if (creating) {
+				if (e == Event::Escape) {
+					creating = false;
+					creating_tab = 0;
+					new_error.clear();
+					return true;
+				}
+				if (e == Event::Return) {
+					new_error.clear();
+					HeroFlavor f = new_flavor_of();
+
+					/* The first slot the game would not already find taken. */
+					char path[SAVE_PATH_MAX] = { 0 };
+					for (int i = 0; i < MAX_CHARACTERS; i++) {
+						char cand[SAVE_PATH_MAX];
+						snprintf(cand, sizeof(cand), "%s/single_%d%s", used_dir, i,
+						    f == FLAVOR_HELLFIRE ? ".hsv" : ".sv");
+						struct stat st;
+						if (stat(cand, &st) != 0) {
+							snprintf(path, sizeof(path), "%s", cand);
+							break;
+						}
+					}
+					if (path[0] == '\0') {
+						new_error = "all ten slots for that game are taken";
+						return true;
+					}
+
+					PkPlayerStruct nh;
+					char err[MPQ_ERR_LEN];
+					if (!hero_create(&nh, f, new_class, new_name.c_str(), err)) {
+						new_error = err;
+						return true;
+					}
+					char clash[SAVE_PATH_MAX];
+					if (save_name_collides(path, nh.pName, clash, sizeof(clash))) {
+						new_error = std::string(Leaf(clash))
+						    + " already uses that name";
+						return true;
+					}
+					if (!save_create(path, &nh, err)) {
+						new_error = err;
+						return true;
+					}
+
+					/* Add it to the list and open it, so the new character is
+					 * the one on screen rather than something to go find. */
+					SaveEntry ne {};
+					snprintf(ne.path, sizeof(ne.path), "%s", path);
+					memcpy(ne.name, nh.pName, PLR_NAME_LEN);
+					ne.name[PLR_NAME_LEN] = '\0';
+					ne.slot = (int)saves.size();
+					ne.flavor = f;
+					ne.in_progress = 0;
+					ne.hero = nh;
+					saves.push_back(ne);
+					picker_items.push_back(std::string("  ") + Pad(ne.name, 18)
+					    + Pad(hero_flavor_name(f), 10)
+					    + Pad(hero_class_name(f, nh.pClass), 11) + "lvl "
+					    + Pad(std::to_string(nh.pLevel), 4) + Commas(nh.pGold)
+					    + " gold");
+					picked = (int)saves.size() - 1;
+
+					creating = false;
+					creating_tab = 0;
+					new_name.clear();
+					ed.Load(saves[picked]);
+					reload_classes();
+					status = "created " + std::string(Leaf(path))
+					    + " -- no equipment; give it gold and buy some";
+					status_color = Color::Cyan;
+					tab_index = 0;
+					sheet_container->SetActiveChild(tab_bar.get());
+					attrs_controls->SetActiveChild(name_field.get());
+					screen_index = 1;
+					return true;
+				}
+				return false; /* the form handles the rest */
+			}
+
+			if (e == Event::Character('n')) {
+				creating = true;
+				creating_tab = 1;
+				new_error.clear();
+				new_name.clear();
+				new_cursor = 0;
+				create_form->SetActiveChild(create_form->ChildAt(0).get());
+				return true;
+			}
 			if (e == Event::Return) {
 				ed.Load(saves[picked]);
 				reload_classes();
@@ -896,6 +1051,13 @@ int tui_main(int argc, char **argv)
 		}
 		return false;
 	});
+
+	/* --new opens the create form before rendering, like --tab for the sheet. */
+	for (int i = 1; i < argc; i++)
+		if (strcmp(argv[i], "--new") == 0) {
+			creating = true;
+			creating_tab = 1;
+		}
 
 	/* --tab N selects a pane before rendering, so each can be inspected. */
 	for (int i = 1; i + 1 < argc; i++)

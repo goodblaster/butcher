@@ -89,6 +89,10 @@ butcher <save>               # open one directly
 butcher <dir>                # browse a particular directory
 ```
 
+`n` on the list screen creates a character — name, game and class, then it
+opens on the sheet ready to be given gold. Same generator as `butcher new`, so
+the same caveat applies: no equipment.
+
 **Naming a save file opens it; anything that scans a directory shows the
 picker** — even when the directory holds exactly one character. Landing
 straight in a character you did not choose is the tool picking for you, and
@@ -228,7 +232,7 @@ since these files get hand-edited. Nothing it writes uses either.
 ### Creating a character
 
 ```bash
-butcher new single_2.sv  --class Warrior --name Aidan --gold 5000
+butcher new single_2.sv  --class Warrior --name Aidan --gold 5000   # or press n in the UI
 butcher new single_3.hsv --class Monk --name Jazreth --level 30 --gold 50000
 ```
 
