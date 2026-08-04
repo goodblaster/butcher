@@ -398,7 +398,7 @@ static void check_game_in_progress(void)
 
 		SaveGameSync sync2 = SAVE_GAME_ABSENT;
 		PkPlayerStruct rich = stats;
-		ok(hero_set_gold(&rich, 50000, err), "give the character gold");
+		ok(hero_set_gold(&rich, FLAVOR_DIABLO, 50000, err), "give the character gold");
 		ok(save_commit_ex(playing, &rich, 0, &sync2, err)
 		        && sync2 == SAVE_GAME_SYNCED_NO_ITEMS,
 		    "an inventory edit reports that items did not go across");

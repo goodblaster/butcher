@@ -150,19 +150,29 @@ int hero_gold_in_stacks(const PkPlayerStruct *h);
 /** Inventory grid cells not occupied by any item. */
 int hero_free_inv_cells(const PkPlayerStruct *h);
 
+/**
+ * Most gold one inventory stack can hold.
+ *
+ * GOLD_MAX_LIMIT in Diablo, and twice that in Hellfire -- ValidatePlayer does
+ * `maxGold = GOLD_MAX_LIMIT; if (gbIsHellfire) maxGold *= 2;` and clamps every
+ * stack to it on each tick. Using the Diablo figure for both halved the gold a
+ * Hellfire character could be given.
+ */
+int hero_gold_stack_max(HeroFlavor f);
+
 /** Largest total hero_set_gold could store given current free space. */
-int hero_gold_capacity(const PkPlayerStruct *h);
+int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f);
 
 /**
  * Rewrite the character's gold to total exactly @p total.
  *
  * Removes existing gold stacks (compacting InvList and fixing up InvGrid),
- * then lays down ceil(total / GOLD_MAX_LIMIT) new stacks in free cells and
- * sets the cached pGold to match. Non-gold items are left untouched.
+ * then lays down enough new stacks in free cells and sets the cached pGold to
+ * match. Non-gold items are left untouched.
  *
  * @return nonzero on success; on failure @p h is unmodified.
  */
-int hero_set_gold(PkPlayerStruct *h, int total, char *err);
+int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err);
 
 /* ---- validation ---- */
 

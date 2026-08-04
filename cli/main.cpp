@@ -447,7 +447,7 @@ static int cmd_set(int argc, char **argv)
 
 	if (gold_requested) {
 		char err[HERO_ERR_LEN];
-		if (!hero_set_gold(&h, want_gold, err)) {
+		if (!hero_set_gold(&h, flavor, want_gold, err)) {
 			fprintf(stderr, "--gold: %s\n", err);
 			return 2;
 		}

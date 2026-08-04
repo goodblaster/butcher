@@ -471,7 +471,13 @@ int hero_gold_in_stacks(const PkPlayerStruct *h)
 	return total;
 }
 
-int hero_gold_capacity(const PkPlayerStruct *h)
+int hero_gold_stack_max(HeroFlavor f)
+{
+	/* ValidatePlayer: maxGold = GOLD_MAX_LIMIT, doubled when gbIsHellfire. */
+	return f == FLAVOR_HELLFIRE ? GOLD_MAX_LIMIT * 2 : GOLD_MAX_LIMIT;
+}
+
+int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f)
 {
 	/* Cells currently holding gold are reusable, plus whatever is free. */
 	int cells = hero_free_inv_cells(h);
@@ -482,11 +488,12 @@ int hero_gold_capacity(const PkPlayerStruct *h)
 	for (int i = 0; i < n; i++)
 		if (h->InvList[i].idx == IDI_GOLD)
 			cells++;
-	return cells * GOLD_MAX_LIMIT;
+	return cells * hero_gold_stack_max(f);
 }
 
-int hero_set_gold(PkPlayerStruct *h, int total, char *err)
+int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 {
+	const int stack_max = hero_gold_stack_max(f);
 	PkPlayerStruct work = *h;
 	int remap[NUM_INV_GRID_ELEM];
 	int kept = 0;
@@ -535,7 +542,7 @@ int hero_set_gold(PkPlayerStruct *h, int total, char *err)
 	work._pNumInv = (BYTE)kept;
 
 	/* Lay down new stacks. */
-	int stacks = (total + GOLD_MAX_LIMIT - 1) / GOLD_MAX_LIMIT;
+	int stacks = (total + stack_max - 1) / stack_max;
 	int free_cells = 0;
 	for (int c = 0; c < NUM_INV_GRID_ELEM; c++)
 		if (work.InvGrid[c] == 0)
@@ -544,7 +551,7 @@ int hero_set_gold(PkPlayerStruct *h, int total, char *err)
 	if (stacks > free_cells) {
 		seterr(err, "%d gold needs %d stacks but only %d inventory cells are free "
 		            "(max %d here; a stack holds %d)",
-		    total, stacks, free_cells, free_cells * GOLD_MAX_LIMIT, GOLD_MAX_LIMIT);
+		    total, stacks, free_cells, free_cells * stack_max, stack_max);
 		return 0;
 	}
 	if (kept + stacks > NUM_INV_GRID_ELEM) {
@@ -568,7 +575,7 @@ int hero_set_gold(PkPlayerStruct *h, int total, char *err)
 		if (work.InvGrid[c] != 0)
 			continue;
 
-		int amount = left > GOLD_MAX_LIMIT ? GOLD_MAX_LIMIT : left;
+		int amount = left > stack_max ? stack_max : left;
 		int slot = kept + placed;
 
 		seed = seed * 1103515245u + 12345u;

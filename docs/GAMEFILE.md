@@ -109,9 +109,34 @@ against a real Diablo saved game. It does not need a special case: if that
 layout were different, verification fails and the save is refused rather than
 damaged.
 
-## Not covered
+## Not covered: the inventory
 
-Inventory and equipment. `game` stores full `ItemStruct`s rather than the packed
-17-byte form in `hero`, so changing gold — which is really a set of item stacks —
-still only reaches the `hero` copy. `hero`'s cached `pGold` is synced; the
-stacks inside the saved game are not.
+`game` stores full `ItemStruct`s rather than the packed 17-byte form in `hero`,
+and butcher does not write them. Gold is really a set of item stacks and
+`ValidatePlayer` recomputes `_pGold` from them every tick, so a gold change
+reaches `hero` and is then undone.
+
+The layout is mapped, though, and verified on both real saves:
+
+| | |
+|---|---|
+| anchor | `InvGrid`, 40 bytes identical to the packed copy, with `_pNumInv` as the `int32` directly before it |
+| `ItemStruct` in file | **372 bytes** (one 8-byte pointer becomes 4) |
+| `_iSeed` | +0 — equals the packed item's `iSeed`, giving a per-item cross-check |
+| `_itype` | +8 (`ITYPE_GOLD` = 11) |
+| `_iCurs` | +192 |
+| `_ivalue` | +196 |
+| `InvBody[7]` | `_pNumInv − 47×372` |
+| `InvList[40]` | `_pNumInv − 40×372` |
+| `SpdList[8]` | after `InvGrid` |
+
+Confirmed by walking each packed gold stack to its counterpart: the Rogue's
+slot 12 held `_itype=11, _ivalue=2554, _iSeed=227478953` against a packed seed
+of `227478953`, and the Monk's slot 7 likewise. Both summed to the cached
+`pGold` exactly.
+
+What is left is the writing. Changing an existing stack's value needs
+`_ivalue` and `_iCurs`; adding one needs a whole `ItemStruct`, best done by
+cloning an existing gold item rather than synthesising 372 bytes — plus
+`_pNumInv` and `InvGrid`, which butcher already computes correctly for the
+packed copy.

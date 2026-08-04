@@ -130,7 +130,7 @@ struct Editor {
 
 		gold = hero_gold_in_stacks(&src);
 		gold_opened = gold;
-		gold_cap = hero_gold_capacity(&src);
+		gold_cap = hero_gold_capacity(&src, entry.flavor);
 
 		for (int s = 0; s < kSpellSlots; s++) {
 			spell_lvl[s] = 0;
@@ -205,7 +205,7 @@ struct Editor {
 		 * unless the total actually changed. */
 		if (gold != gold_opened) {
 			char err[HERO_ERR_LEN];
-			hero_set_gold(&h, gold, err);
+			hero_set_gold(&h, entry.flavor, gold, err);
 		}
 		return h;
 	}
