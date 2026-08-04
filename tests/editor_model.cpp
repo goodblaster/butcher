@@ -18,6 +18,7 @@
 
 #include <stdarg.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
 
@@ -511,6 +512,71 @@ static void check_level_up(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 3e. The sheet's own save path                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * From a report that a gold change made on the command line held, but the same
+ * change made in the sheet did not. The two go through different code to reach
+ * the same commit -- the sheet builds its character with Compose() -- so this
+ * drives that path and checks the result on disk.
+ */
+static void check_sheet_save(void)
+{
+	section("3e. saving from the sheet reaches the disk");
+
+	const char *dir = getenv("BUTCHER_TMPDIR");
+	char path[SAVE_PATH_MAX];
+	snprintf(path, sizeof(path), "%s/single_8.sv", dir != NULL ? dir : ".");
+
+	PkPlayerStruct h;
+	base_hero(&h, "Aidan", PC_WARRIOR);
+	char err[HERO_ERR_LEN];
+	ok(hero_set_gold(&h, FLAVOR_DIABLO, 3000, err), "a character with one pile");
+	if (!save_create(path, &h, err)) {
+		ok(0, "build a save to edit");
+		printf("        %s\n", err);
+		return;
+	}
+
+	SaveEntry e {};
+	snprintf(e.path, sizeof(e.path), "%s", path);
+	e.flavor = FLAVOR_DIABLO;
+	e.hero = h;
+
+	Editor ed;
+	ed.Load(e);
+
+	/* Exactly what moving the gold slider and pressing ^S does. */
+	ed.gold = 40000;
+	PkPlayerStruct composed = ed.Compose();
+	ok(hero_gold_in_stacks(&composed) == 40000, "Compose distributes the new gold");
+
+	char werr[MPQ_ERR_LEN];
+	ok(save_commit_ex(path, &composed, /*backup=*/0, NULL, werr),
+	    "the sheet's commit succeeds");
+
+	/* And it is on disk now, not at exit. */
+	PkPlayerStruct on_disk;
+	ok(save_read_hero(path, &on_disk, NULL, werr), "the save reads back");
+	ok(on_disk.pGold == 40000 && hero_gold_in_stacks(&on_disk) == 40000,
+	    "  ...with the new gold already written");
+
+	/*
+	 * Saving a second time without touching anything must be a no-op. If the
+	 * sheet re-ran the gold distribution it would lay down fresh stacks with
+	 * different seeds every time, which is how an edit can look unstable.
+	 */
+	ed.original = composed;
+	ed.gold_opened = ed.gold;
+	PkPlayerStruct again = ed.Compose();
+	ok(memcmp(&again, &composed, sizeof(again)) == 0,
+	    "composing again after a save changes nothing");
+
+	remove(path);
+}
+
+/* ------------------------------------------------------------------ */
 /* 4. Name sanitising                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -558,6 +624,7 @@ int main(void)
 	check_caps();
 	check_spell_flavor();
 	check_repair();
+	check_sheet_save();
 	check_level_up();
 	check_names();
 

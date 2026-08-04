@@ -822,6 +822,99 @@ int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 	return r;
 }
 
+int save_create(const char *path, const PkPlayerStruct *h, char *err)
+{
+	/* "x" so an existing character is never silently replaced. */
+	FILE *f = fopen(path, "wbx");
+	if (f == NULL) {
+		seterr(err, "cannot create %s: %s", path, strerror(errno));
+		return 0;
+	}
+
+	BYTE blob[1288];
+	memset(blob, 0, sizeof(blob));
+	memcpy(blob, h, sizeof(*h));
+	codec_encode(blob, sizeof(*h), sizeof(blob), SAVE_PASSWORD_SINGLE);
+
+	_BLOCKENTRY *block = (_BLOCKENTRY *)calloc(MPQ_INDEX_ENTRIES, sizeof(_BLOCKENTRY));
+	_HASHENTRY *hash = (_HASHENTRY *)malloc(MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY));
+	if (block == NULL || hash == NULL) {
+		free(block);
+		free(hash);
+		fclose(f);
+		remove(path);
+		seterr(err, "out of memory");
+		return 0;
+	}
+	memset(hash, 0xFF, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY));
+	InitHash();
+
+	/* One sector: 1288 bytes is well under MPQ_SECTOR_SIZE. */
+	BYTE body[MPQ_SECTOR_SIZE * 2];
+	DWORD *offs = (DWORD *)body;
+	BYTE sector[MPQ_SECTOR_SIZE];
+	memcpy(sector, blob, sizeof(blob));
+	int stored = PkwareCompress(sector, (int)sizeof(blob));
+	offs[0] = 8;
+	offs[1] = 8 + (DWORD)stored;
+	memcpy(body + 8, sector, (size_t)stored);
+
+	block[0].offset = MPQ_DATA_OFFSET;
+	block[0].sizealloc = (int)offs[1];
+	block[0].sizefile = (int)sizeof(blob);
+	block[0].flags = (int)(MPQ_FLAG_EXISTS | MPQ_FLAG_IMPLODE);
+
+	DWORD idx = Hash("hero", 0) & (MPQ_INDEX_ENTRIES - 1);
+	hash[idx].hashcheck[0] = (int)Hash("hero", 1);
+	hash[idx].hashcheck[1] = (int)Hash("hero", 2);
+	hash[idx].lcid = 0;
+	hash[idx].block = 0;
+
+	_FILEHEADER hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.signature = (int)MPQ_SIGNATURE;
+	hdr.headersize = 32;
+	hdr.filesize = (int)(MPQ_DATA_OFFSET + offs[1]);
+	hdr.sectorsizeid = 3;
+	hdr.hashoffset = MPQ_HASH_OFFSET;
+	hdr.blockoffset = MPQ_BLOCK_OFFSET;
+	hdr.hashcount = MPQ_INDEX_ENTRIES;
+	hdr.blockcount = MPQ_INDEX_ENTRIES;
+
+	Encrypt((DWORD *)block, MPQ_INDEX_ENTRIES * sizeof(_BLOCKENTRY),
+	    Hash("(block table)", 3));
+	Encrypt((DWORD *)hash, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY),
+	    Hash("(hash table)", 3));
+
+	int ok = fwrite(&hdr, sizeof(hdr), 1, f) == 1
+	    && fwrite(block, MPQ_INDEX_ENTRIES * sizeof(_BLOCKENTRY), 1, f) == 1
+	    && fwrite(hash, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY), 1, f) == 1
+	    && fwrite(body, offs[1], 1, f) == 1;
+	free(block);
+	free(hash);
+	if (fclose(f) != 0)
+		ok = 0;
+
+	if (!ok) {
+		remove(path);
+		seterr(err, "short write creating %s", path);
+		return 0;
+	}
+
+	/* Never leave behind something that does not read back. */
+	PkPlayerStruct back;
+	if (!save_read_hero(path, &back, NULL, err)) {
+		remove(path);
+		return 0;
+	}
+	if (memcmp(&back, h, sizeof(back)) != 0) {
+		remove(path);
+		seterr(err, "the new save did not read back as written");
+		return 0;
+	}
+	return 1;
+}
+
 int save_has_game(const char *path)
 {
 	char err[MPQ_ERR_LEN];

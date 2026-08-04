@@ -75,6 +75,18 @@ BYTE *mpq_read_file(MpqArchive *a, const char *name, DWORD *out_len, char *err);
 int save_read_hero(const char *path, PkPlayerStruct *out, int *used_multi, char *err);
 
 /**
+ * Create a new save archive containing just this character.
+ *
+ * Writes the same fixed layout the game uses -- header, block and hash tables
+ * at their usual offsets, one imploded sector -- with a single `hero` member
+ * and no saved game. Refuses if the file already exists.
+ *
+ * The result is what the game writes for a character that has been created but
+ * never played.
+ */
+int save_create(const char *path, const PkPlayerStruct *h, char *err);
+
+/**
  * @return nonzero if the archive holds a saved game in progress.
  *
  * This matters more than it looks. A save carries the character twice: `hero`

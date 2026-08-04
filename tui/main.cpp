@@ -384,7 +384,23 @@ int tui_main(int argc, char **argv)
 	auto slider_hpmax = Slider(SliderOption<int> { &ed.hp_max, 1, &ed.cap_life, 1 });
 	auto slider_mana = Slider(SliderOption<int> { &ed.mana, 0, &ed.mana_max, 1 });
 	auto slider_manamax = Slider(SliderOption<int> { &ed.mana_max, 0, &ed.cap_mana, 1 });
-	auto slider_gold = Slider(SliderOption<int> { &ed.gold, 0, &ed.cap_gold, 100 });
+	/*
+	 * Gold moves a pile at a time. A step of 100 meant dozens of presses to
+	 * reach a useful figure and landed on totals like 2,654 that no character
+	 * would ever have. Snapping down to a multiple after each step makes the
+	 * first press from any odd amount land on GOLD_STEP exactly, and every
+	 * press after that add exactly GOLD_STEP.
+	 */
+	static const int kGoldStep = 5000;
+	SliderOption<int> gold_opt { &ed.gold, 0, &ed.cap_gold, kGoldStep };
+	gold_opt.on_change = [&ed] {
+		int snapped = ed.gold - (ed.gold % kGoldStep);
+		/* Never snap a non-zero amount away to nothing. */
+		ed.gold = (snapped == 0 && ed.gold > 0) ? kGoldStep : snapped;
+		if (ed.gold > ed.cap_gold)
+			ed.gold = ed.cap_gold;
+	};
+	auto slider_gold = Slider(gold_opt);
 	auto slider_dlvl = Slider(SliderOption<int> { &ed.dlvl, 0, &ed.cap_dlvl, 1 });
 
 	auto attrs_controls = Container::Vertical({
@@ -484,10 +500,13 @@ int tui_main(int argc, char **argv)
 		        slider_gold->Render() | flex,
 		        text("  0-" + Commas(ed.cap_gold)) | dim,
 		    })));
-		int nstacks = (ed.gold + GOLD_MAX_LIMIT - 1) / GOLD_MAX_LIMIT;
+		/* A Hellfire pile holds twice a Diablo one, so this cannot be a
+		 * constant -- it read "at most 5,000" on a Hellfire character. */
+		int stack_max = hero_gold_stack_max(ed.entry.flavor);
+		int nstacks = (ed.gold + stack_max - 1) / stack_max;
 		rows.push_back(text("   └ " + std::to_string(nstacks)
 		                  + (nstacks == 1 ? " stack of at most " : " stacks of at most ")
-		                  + Commas(GOLD_MAX_LIMIT)
+		                  + Commas(stack_max)
 		                  + ", " + std::to_string(hero_free_inv_cells(&h))
 		                  + " cells free")
 		    | dim);
