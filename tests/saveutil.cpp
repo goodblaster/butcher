@@ -130,13 +130,24 @@ static void put32(BYTE *p, int v)
 	p[3] = (BYTE)(v >> 24);
 }
 
-/** @param stale_tail leave junk after the name, as a renamed character has. */
-static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
+/**
+ * @param stale_tail leave junk after the name, as a renamed character has.
+ * @param levels     17 for a Diablo saved game, 25 for Hellfire. Changing it
+ *                   moves the whole record, which is the point: both anchors
+ *                   are searched for, so neither should care.
+ */
+static void make_game_blob_ex(BYTE *out, const PkPlayerStruct *h, int stale_tail,
+    int levels)
 {
-	memset(out, 0, GAME_FIXTURE_LEN);
-	memcpy(out, "HELF", 4);
+	long name_at = 43 + (long)levels * 8 + 320;
+	long list_at = name_at + 600;
+	long numinv_at = list_at + (long)NUM_INV_GRID_ELEM * GAME_ITEM_SIZE;
+	long grid_at = numinv_at + 4;
 
-	BYTE *rec = out + GAME_FIXTURE_NAME;
+	memset(out, 0, GAME_FIXTURE_LEN);
+	memcpy(out, levels == 25 ? "HELF" : "RETL", 4);
+
+	BYTE *rec = out + name_at;
 	memcpy(rec - 127, h->pSplLvl, 37);
 	memcpy(rec - 127 + 37, h->pSplLvl2, 10);
 	memcpy(rec - 56, &h->pMemSpells, 8);
@@ -145,7 +156,7 @@ static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
 	if (stale_tail) {
 		size_t n = strnlen(h->pName, PLR_NAME_LEN);
 		if (n + 2 < PLR_NAME_LEN) {
-			rec[n + 1] = 'j'; /* the game does not clear the old name */
+			rec[n + 1] = 'j';
 			rec[n + 2] = 'h';
 		}
 	}
@@ -163,26 +174,28 @@ static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
 	put32(rec + 124, h->pExperience);
 	put32(rec + 140, h->pGold);
 
-	/*
-	 * The inventory, as full item records. Only the three fields gamefile.cpp
-	 * reads are filled; the rest stays zero, which is enough for it to match
-	 * items by seed and recognise gold by type.
-	 */
 	for (int i = 0; i < h->_pNumInv; i++) {
-		BYTE *it = out + GAME_FIXTURE_INVLIST + (size_t)i * GAME_ITEM_SIZE;
+		BYTE *it = out + list_at + (size_t)i * GAME_ITEM_SIZE;
 		put32(it + GAME_ITEM_SEED, (int)h->InvList[i].iSeed);
 		put32(it + GAME_ITEM_ITYPE,
 		    h->InvList[i].idx == IDI_GOLD ? ITYPE_GOLD : ITYPE_MISC);
 		put32(it + GAME_ITEM_IVALUE,
 		    h->InvList[i].idx == IDI_GOLD ? h->InvList[i].wValue : 0);
 	}
-	put32(out + GAME_FIXTURE_NUMINV, h->_pNumInv);
-	memcpy(out + GAME_FIXTURE_GRID, h->InvGrid, NUM_INV_GRID_ELEM);
+	put32(out + numinv_at, h->_pNumInv);
+	memcpy(out + grid_at, h->InvGrid, NUM_INV_GRID_ELEM);
+}
+
+/** @param stale_tail leave junk after the name, as a renamed character has. */
+static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
+{
+	make_game_blob_ex(out, h, stale_tail, GAME_FIXTURE_LEVELS);
 }
 
 /**
  * Write a one-file save archive containing this character.
- * @param with_game 0 none, 1 a saved game, 2 one with a stale name tail.
+ * @param with_game 0 none, 1 a Hellfire saved game, 2 one with a stale name
+ *                  tail, 3 a Diablo (RETL) one.
  */
 static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_game)
 {
@@ -219,17 +232,13 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 	DWORD total = offs[1];
 	if (with_game) {
 		/*
-		 * A "game" member marks a save the game will load its own copy of the
-		 * player from. The contents do not matter here -- only that the name
-		 * resolves, which is what save_has_game looks for.
-		 */
-		/*
 		 * A real saved game, not a placeholder: magic, LoadGame's prologue, and
 		 * a player record carrying the same character. Anything less would let
 		 * the commit path skip the part under test.
 		 */
 		BYTE plain[GAME_FIXTURE_LEN];
-		make_game_blob(plain, hero, with_game == 2);
+		make_game_blob_ex(plain, hero, with_game == 2,
+		    with_game == 3 ? 17 : GAME_FIXTURE_LEVELS);
 		DWORD genc = codec_get_encoded_len(sizeof(plain));
 		BYTE *gbuf = (BYTE *)malloc(genc);
 		memcpy(gbuf, plain, sizeof(plain));
@@ -508,6 +517,58 @@ static void check_game_in_progress(void)
 		ok(save_read_hero(gpath, &after, NULL, err) && after.pGold == 0,
 		    "  ...and the save is left as it was");
 		remove(gpath);
+	}
+
+	/*
+	 * A Diablo saved game. RETL has a shorter prologue than HELF -- 17 dungeon
+	 * levels rather than 25 -- which moves the whole record and everything
+	 * after it. Neither anchor is computed from that, both are searched for, so
+	 * nothing should notice; this is what says so out loud.
+	 *
+	 * Worth stating plainly: this exercises the code path, not a real Diablo
+	 * saved game, which I have none of. The record itself is the same
+	 * PlayerStruct in both games, and a layout that had shifted would fail
+	 * verification rather than corrupt anything.
+	 */
+	{
+		char dpath[SAVE_PATH_MAX];
+		snprintf(dpath, sizeof(dpath), "%s", tmppath("single_9.sv"));
+		base_hero(&h, "Aidan", PC_WARRIOR);
+		ok(hero_set_gold(&h, FLAVOR_DIABLO, 2000, err), "a Diablo character");
+		make_save_ex(dpath, &h, /*with_game=*/3);
+
+		DWORD glen = 0;
+		int present = 0;
+		BYTE *g = game_read(dpath, &glen, &present, err);
+		GameLoc loc;
+		ok(g != NULL && game_locate(g, glen, &h, &loc, err),
+		    "a RETL saved game is located just like a HELF one");
+		if (g != NULL) {
+			ok(!loc.hellfire && loc.levels == 17, "  ...and reports 17 levels");
+			ok(loc.inv_found, "  ...with its inventory found too");
+			/* The shifted prologue must not have shifted the anchors. */
+			ok(loc.name == 43 + 17 * 8 + 320,
+			    "  ...at the offset the shorter prologue implies");
+		}
+		free(g);
+
+		/* And a full edit round-trips through it. */
+		PkPlayerStruct rich = h;
+		ok(hero_set_gold(&rich, FLAVOR_DIABLO, 25000, err), "raise its gold");
+		rich.pBaseStr = 99;
+		SaveGameSync sync = SAVE_GAME_ABSENT;
+		err[0] = '\0';
+		int wrote = save_commit_ex(dpath, &rich, 0, &sync, err);
+		if (!wrote)
+			printf("        %s\n", err);
+		ok(wrote && sync == SAVE_GAME_SYNCED_ITEMS,
+		    "  ...and an edit writes through to it, inventory included");
+
+		PkPlayerStruct back2;
+		ok(save_read_hero(dpath, &back2, NULL, err) && back2.pGold == 25000
+		        && back2.pBaseStr == 99,
+		    "  ...landing on disk");
+		remove(dpath);
 	}
 
 	/* A renamed character leaves junk after the terminator in "game" but not in

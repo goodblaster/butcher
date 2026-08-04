@@ -225,6 +225,40 @@ struct Editor {
 		return memcmp(&h, &entry.hero, sizeof(h)) != 0;
 	}
 
+	/**
+	 * Everything that must hold before the sheet may write.
+	 *
+	 * Lives here rather than in the event handler so it can be tested, and so
+	 * the sheet cannot drift from the command line on what it refuses. Both now
+	 * reject the same two things: a character the game would not accept, and a
+	 * name another save already uses.
+	 *
+	 * @return nonzero if saving is allowed; otherwise @p why says what stops it.
+	 */
+	int CanSave(char *why, size_t why_len) const
+	{
+		PkPlayerStruct h = Compose();
+
+		char err[HERO_ERR_LEN];
+		if (!hero_validate(&h, entry.flavor, err)) {
+			snprintf(why, why_len, "%s", err);
+			return 0;
+		}
+
+		/* The game resolves a name to the first matching slot, so a duplicate
+		 * leaves one character permanently unreachable. */
+		char clash[SAVE_PATH_MAX];
+		if (save_name_collides(entry.path, h.pName, clash, sizeof(clash))) {
+			const char *leaf = strrchr(clash, '/');
+			snprintf(why, why_len,
+			    "%s already uses that name -- the game would only ever reach one "
+			    "of them",
+			    leaf != NULL ? leaf + 1 : clash);
+			return 0;
+		}
+		return 1;
+	}
+
 	/** Rebase Compose() on @p h and show it, leaving entry.hero as the file. */
 	void ApplyRepair(const PkPlayerStruct &h)
 	{

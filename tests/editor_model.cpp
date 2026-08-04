@@ -563,15 +563,74 @@ static void check_sheet_save(void)
 	    "  ...with the new gold already written");
 
 	/*
-	 * Saving a second time without touching anything must be a no-op. If the
-	 * sheet re-ran the gold distribution it would lay down fresh stacks with
-	 * different seeds every time, which is how an edit can look unstable.
+	 * What the sheet does after a successful save. entry.hero has to become the
+	 * character just written, or "unchanged" is measured against the file as it
+	 * was first read and the sheet keeps claiming there is something to save.
 	 */
 	ed.original = composed;
+	ed.entry.hero = composed;
 	ed.gold_opened = ed.gold;
+	ed.level_opened = ed.level_target;
+	ed.level_stored = composed.pLevel;
+
 	PkPlayerStruct again = ed.Compose();
 	ok(memcmp(&again, &composed, sizeof(again)) == 0,
 	    "composing again after a save changes nothing");
+	ok(!ed.Dirty(), "and the sheet no longer claims unsaved changes");
+
+	/* Revert now means "back to what was saved", which is what is on disk. */
+	ed.gold = 12345;
+	ok(ed.Dirty(), "a further edit is seen as modified again");
+	ed.Load(ed.entry);
+	ok(!ed.Dirty(), "reverting returns to the saved state");
+	PkPlayerStruct reverted = ed.Compose();
+	ok(hero_gold_in_stacks(&reverted) == 40000,
+	    "  ...which is the 40000 that was written, not the original 3000");
+
+	/*
+	 * What the sheet refuses. It used to refuse less than the command line: a
+	 * rename onto a name another save already used went straight through, and
+	 * the game only ever reaches the first match, so the other character became
+	 * unreachable.
+	 */
+	{
+		char sibling[SAVE_PATH_MAX];
+		snprintf(sibling, sizeof(sibling), "%s/single_9.sv",
+		    dir != NULL ? dir : ".");
+		PkPlayerStruct other;
+		base_hero(&other, "Moreina", PC_ROGUE);
+		ok(save_create(sibling, &other, err), "a second save alongside it");
+
+		PkPlayerStruct mine;
+		base_hero(&mine, "Aidan", PC_WARRIOR);
+		remove(path); /* save_create refuses to overwrite, by design */
+		ok(save_create(path, &mine, err), "and the one being edited");
+
+		SaveEntry se {};
+		snprintf(se.path, sizeof(se.path), "%s", path);
+		se.flavor = FLAVOR_DIABLO;
+		se.hero = mine;
+
+		Editor e2;
+		e2.Load(se);
+		char why[HERO_ERR_LEN];
+		ok(e2.CanSave(why, sizeof(why)), "its own name is fine");
+
+		e2.name = "Moreina";
+		ok(!e2.CanSave(why, sizeof(why)),
+		    "renaming onto a sibling's name is refused, as on the command line");
+		printf("        %s\n", why);
+
+		e2.name = "Griswold";
+		ok(e2.CanSave(why, sizeof(why)), "an unused name is allowed");
+
+		/* And an invalid character is refused for the older reason. */
+		e2.name = "Aidan";
+		e2.vit = 250; /* past the Warrior cap */
+		ok(!e2.CanSave(why, sizeof(why)), "a character the game would reject too");
+
+		remove(sibling);
+	}
 
 	remove(path);
 }

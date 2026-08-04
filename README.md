@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 629 tests.
+package manager. `make check` builds the tool and runs 647 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -151,6 +151,10 @@ It opens on a picker, or straight into a character sheet with three panes —
 The Gold slider moves **one pile at a time** — 5,000, or 10,000 in Hellfire —
 snapping to a round figure, because a step of 100 meant dozens of presses and
 landed on totals no character would ever have.
+
+The sheet refuses exactly what the command line refuses: a character the game
+would reject, and a name another save already uses — the game resolves a name
+to the first matching slot, so a duplicate leaves one character unreachable.
 
 `tab` cycles panes, arrows move between fields and adjust them, `space` toggles
 a spell in the book, `^S` saves behind a confirmation, `^F` repairs anything
@@ -452,7 +456,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 629 checks |
+| `tests/` | Nine suites, 647 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

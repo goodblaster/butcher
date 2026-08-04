@@ -103,11 +103,16 @@ Two details that check produced, which reading the source would not have:
 Two real DevilutionX 1.2.1 Hellfire saves — a Rogue at level 25 and a Monk at
 level 3 — with all seventeen fields agreeing in both.
 
-`RETL` (Diablo) is accepted and the record layout should be identical, since the
-struct does not change between the two games. It has **not** been exercised
-against a real Diablo saved game. It does not need a special case: if that
-layout were different, verification fails and the save is refused rather than
-damaged.
+`RETL` (Diablo) is exercised by a synthetic saved game with the shorter
+17-level prologue, which moves the record and everything after it. Nothing
+notices, and that is the point: **neither anchor is computed from the level
+count** — the name and `InvGrid` are both searched for — so the only thing the
+flavour changes is which magic is accepted and a label in `inspect`.
+
+It has still **not** been run against a real Diablo saved game, and the honest
+statement is that this proves the code path rather than the byte layout. The
+record is the same `PlayerStruct` in both games, and a layout that had shifted
+would fail verification rather than corrupt anything.
 
 ## The inventory
 

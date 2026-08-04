@@ -751,9 +751,9 @@ int tui_main(int argc, char **argv)
 		if (confirming) {
 			if (e == Event::Character('y')) {
 				PkPlayerStruct h = ed.Compose();
-				char err[HERO_ERR_LEN];
-				if (!hero_validate(&h, ed.entry.flavor, err)) {
-					status = std::string("refused: ") + err;
+				char why[HERO_ERR_LEN];
+				if (!ed.CanSave(why, sizeof(why))) {
+					status = std::string("refused: ") + why;
 					status_color = Color::Red;
 				} else {
 					char werr[MPQ_ERR_LEN];
@@ -767,7 +767,16 @@ int tui_main(int argc, char **argv)
 						         werr)
 						    != 0;
 					if (ok) {
+						/*
+						 * entry.hero is what "unchanged" is measured against, so
+						 * it has to become the character just written. Leaving it
+						 * as the file first read meant the sheet still said
+						 * "modified" immediately after a successful save -- which
+						 * reads as the save not having happened, and invites a
+						 * second one that writes another backup for nothing.
+						 */
 						ed.original = h;
+						ed.entry.hero = h;
 						ed.level_opened = ed.level_target;
 						ed.level_stored = h.pLevel;
 						ed.gold_opened = ed.gold;
