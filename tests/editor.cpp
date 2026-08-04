@@ -154,6 +154,89 @@ static int inv_consistent(const PkPlayerStruct *h, char *why, size_t n)
 }
 
 /* ------------------------------------------------------------------ */
+/* 0. Creating a character                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * hero_create reproduces CreatePlayer. The figures below are the game's own
+ * (Source/player.cpp): starting stats from the four tables, life
+ * (vitality + 10) << 6 with a class multiplier, mana magic << 6 likewise.
+ */
+static void check_create(void)
+{
+	section("0. creating a character");
+
+	char err[HERO_ERR_LEN];
+	PkPlayerStruct h;
+
+	ok(hero_create(&h, FLAVOR_DIABLO, PC_WARRIOR, "Aidan", err), "a Warrior");
+	ok(h.pBaseStr == 30 && h.pBaseMag == 10 && h.pBaseDex == 20 && h.pBaseVit == 25,
+	    "  ...with the game's starting stats");
+	ok(HERO_TO_WHOLE(h.pMaxHPBase) == 70, "  ...70 life: (25+10) doubled");
+	ok(HERO_TO_WHOLE(h.pMaxManaBase) == 10, "  ...and 10 mana");
+	ok(h.pLevel == 1 && h.pExperience == 0 && h.pStatPts == 0, "  ...at level 1");
+	ok(h.pHPBase == h.pMaxHPBase && h.pManaBase == h.pMaxManaBase, "  ...at full");
+	ok(hero_validate(&h, FLAVOR_DIABLO, err), "  ...and it validates");
+
+	/* Empty slots are 0xFFFF; a zeroed one reads as item index 0, which is gold. */
+	int empty = 1;
+	for (int i = 0; i < NUM_INV_GRID_ELEM; i++)
+		if (h.InvList[i].idx != 0xFFFF)
+			empty = 0;
+	for (int i = 0; i < NUM_INVLOC; i++)
+		if (h.InvBody[i].idx != 0xFFFF)
+			empty = 0;
+	ok(empty && h._pNumInv == 0 && h.pGold == 0,
+	    "  ...carrying nothing, with every slot marked empty rather than zeroed");
+
+	/* Only a Sorcerer starts knowing a spell. */
+	ok(hero_create(&h, FLAVOR_DIABLO, PC_SORCERER, "Jazreth", err), "a Sorcerer");
+	ok(h.pSplLvl[SPL_FIREBOLT] == 2 && (h.pMemSpells & SPELLBIT(SPL_FIREBOLT)) != 0,
+	    "  ...starts with Firebolt at level 2");
+	ok(HERO_TO_WHOLE(h.pMaxManaBase) == 70, "  ...and 70 mana: 35 doubled");
+
+	ok(hero_create(&h, FLAVOR_DIABLO, PC_ROGUE, "Moreina", err), "a Rogue");
+	ok(h.pMemSpells == 0, "  ...knows no spells");
+	ok(HERO_TO_WHOLE(h.pMaxHPBase) == 45, "  ...45 life: (20+10) and half again");
+
+	/* Hellfire classes exist only there. */
+	ok(!hero_create(&h, FLAVOR_DIABLO, 3, "Jazreth", err),
+	    "a Monk is refused in Diablo");
+	ok(hero_create(&h, FLAVOR_HELLFIRE, 3, "Jazreth", err), "  ...and allowed in Hellfire");
+	ok(hero_create(&h, FLAVOR_HELLFIRE, 5, "Grognak", err), "a Barbarian");
+	ok(h.pBaseMag == 0, "  ...starts with no magic at all");
+
+	/* Bad input is refused rather than producing a broken character. */
+	ok(!hero_create(&h, FLAVOR_DIABLO, 99, "Aidan", err), "an impossible class is refused");
+	ok(!hero_create(&h, FLAVOR_DIABLO, PC_WARRIOR, "", err), "an empty name is refused");
+	ok(!hero_create(&h, FLAVOR_DIABLO, PC_WARRIOR, "a/b", err), "a bad name is refused");
+
+	/* Levelling a generated character is the same path as levelling any other. */
+	ok(hero_create(&h, FLAVOR_HELLFIRE, 3, "Jazreth", err), "a fresh Monk");
+	int gained = hero_level_up(&h, FLAVOR_HELLFIRE, 30, err);
+	ok(gained == 29 && h.pLevel == 30, "raised to 30");
+	ok(h.pStatPts == 29 * 5, "  ...with the points those levels grant");
+	ok(hero_validate(&h, FLAVOR_HELLFIRE, err), "  ...still valid");
+
+	/* And gold, which a new save can always take -- no game, so no stacks to
+	 * clone from and none needed. */
+	ok(hero_set_gold(&h, FLAVOR_HELLFIRE, 50000, err), "and 50000 gold");
+	ok(hero_gold_in_stacks(&h) == 50000, "  ...in real stacks");
+	ok(hero_validate(&h, FLAVOR_HELLFIRE, err), "  ...still valid");
+
+	/* Round-trip through an actual archive. */
+	const char *p = tmppath("made.hsv");
+	remove(p);
+	ok(save_create(p, &h, err), "written to a new save");
+	PkPlayerStruct back;
+	ok(save_read_hero(p, &back, NULL, err), "read back");
+	ok(memcmp(&back, &h, sizeof(back)) == 0, "byte-identical");
+	ok(!save_has_game(p), "with no game in progress, as a new character has none");
+	ok(!save_create(p, &h, err), "creating over an existing save is refused");
+	remove(p);
+}
+
+/* ------------------------------------------------------------------ */
 /* 1. Gold distribution                                                */
 /* ------------------------------------------------------------------ */
 
@@ -873,6 +956,7 @@ int main(void)
 	printf("Devilution character editor -- Phase 4 editor\n");
 	printf("scratch dir: %s\n", g_tmpdir);
 
+	check_create();
 	check_gold();
 	check_validation();
 	check_spells();

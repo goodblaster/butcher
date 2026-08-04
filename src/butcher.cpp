@@ -27,7 +27,7 @@ namespace {
  * CLI; anything else is treated as a save or a directory for the UI.
  */
 const char *const kVerbs[] = {
-	"list", "show", "set", "validate", "fix", "inspect", "export", "import",
+	"list", "show", "set", "validate", "fix", "inspect", "new", "export", "import",
 	"dump", "patch",
 	"help", "--help", "-h",
 };

@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 647 tests.
+package manager. `make check` builds the tool and runs 680 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -224,6 +224,27 @@ butcher export single_0.hsv -o - | jq '.level = 30' | butcher validate -
 
 On input the reader also accepts `//` and `/* */` comments and trailing commas,
 since these files get hand-edited. Nothing it writes uses either.
+
+### Creating a character
+
+```bash
+butcher new single_2.sv  --class Warrior --name Aidan --gold 5000
+butcher new single_3.hsv --class Monk --name Jazreth --level 30 --gold 50000
+```
+
+Builds a level-1 character exactly as `CreatePlayer` does — starting stats from
+the game's four tables, life `(vitality + 10) << 6` with the class multiplier,
+mana likewise, and Firebolt at level 2 for a Sorcerer. `--level` runs it up
+through real level-ups, so it collects the stat points and life those levels
+grant. The class list comes from the flavour, so a Monk needs a `.hsv`.
+
+**The character has no equipment.** The game builds a new hero's starting gear
+with its item generator, which makes items from a seed, and butcher cannot
+synthesise those. Give it gold and buy some — a new save has no game in
+progress, so gold is unrestricted there.
+
+Refuses to overwrite an existing save, and refuses a name another save in the
+same folder already uses.
 
 ### Validating
 
@@ -456,7 +477,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 647 checks |
+| `tests/` | Nine suites, 680 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

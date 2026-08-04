@@ -671,6 +671,118 @@ static const char *kind_label(InputKind k)
 }
 
 /* ------------------------------------------------------------------ */
+/* new                                                                 */
+/* ------------------------------------------------------------------ */
+
+static int cmd_new(int argc, char **argv)
+{
+	const char *path = NULL;
+	const char *name = NULL;
+	const char *cls = NULL;
+	int level = 1, gold = 0;
+
+	for (int i = 0; i < argc; i++) {
+		const char *a = argv[i];
+		if (strncmp(a, "--", 2) != 0) {
+			if (path == NULL) {
+				path = a;
+				continue;
+			}
+			fprintf(stderr, "unexpected argument: %s\n", a);
+			return 2;
+		}
+		if (i + 1 >= argc) {
+			fprintf(stderr, "%s needs a value\n", a);
+			return 2;
+		}
+		const char *v = argv[++i];
+		if (strcmp(a, "--name") == 0)
+			name = v;
+		else if (strcmp(a, "--class") == 0)
+			cls = v;
+		else if (strcmp(a, "--level") == 0) {
+			if (!parse_int(v, &level)) {
+				fprintf(stderr, "--level must be a number\n");
+				return 2;
+			}
+		} else if (strcmp(a, "--gold") == 0) {
+			if (!parse_int(v, &gold)) {
+				fprintf(stderr, "--gold must be a number\n");
+				return 2;
+			}
+		} else {
+			fprintf(stderr, "unknown option %s\n", a);
+			return 2;
+		}
+	}
+
+	if (path == NULL || cls == NULL || name == NULL) {
+		fprintf(stderr, "usage: butcher new <save.sv> --class NAME --name NAME\n"
+		                "                  [--level N] [--gold N]\n");
+		return 2;
+	}
+
+	HeroFlavor f = flavor_of(path);
+
+	int pclass = -1;
+	for (int c = 0; c < hero_num_classes(f); c++)
+		if (strcasecmp(hero_class_name(f, c), cls) == 0)
+			pclass = c;
+	if (pclass < 0) {
+		fprintf(stderr, "no %s class called \"%s\". Available:", hero_flavor_name(f), cls);
+		for (int c = 0; c < hero_num_classes(f); c++)
+			fprintf(stderr, " %s", hero_class_name(f, c));
+		fprintf(stderr, "\n");
+		return 2;
+	}
+
+	PkPlayerStruct h;
+	char err[MPQ_ERR_LEN];
+	if (!hero_create(&h, f, pclass, name, err)) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 2;
+	}
+	if (level > 1 && !hero_level_up(&h, f, level, err)) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 2;
+	}
+	/* A new save has no game in progress, so gold has no stacks to clone
+	 * from and none is needed -- hero_set_gold is unrestricted here. */
+	if (gold > 0 && !hero_set_gold(&h, f, gold, err)) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 2;
+	}
+
+	/* A name another save already uses would leave one of them unreachable. */
+	char clash[SAVE_PATH_MAX];
+	if (save_name_collides(path, h.pName, clash, sizeof(clash))) {
+		fprintf(stderr, "butcher: %s already uses the name \"%s\"; the game "
+		                "resolves a name to the first matching slot, so one "
+		                "would be unreachable\n",
+		    clash, h.pName);
+		return 2;
+	}
+
+	if (!hero_validate(&h, f, err)) {
+		fprintf(stderr, "butcher: the generated character is not valid: %s\n", err);
+		return 1;
+	}
+	if (!save_create(path, &h, err)) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 1;
+	}
+
+	printf("created %s\n", path);
+	format_show(&h, f, stdout);
+	fprintf(stderr,
+	    "\nnote: the character has no equipment. The game builds a new hero's\n"
+	    "  starting gear with its item generator, which makes items from a seed,\n"
+	    "  and butcher cannot synthesise those. Buy some -- give it gold with\n"
+	    "  --gold if you have not already.\n");
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* inspect                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1158,6 +1270,13 @@ static int usage(void)
 	    "        total, and spell state the game would correct on load.\n"
 	    "        Refuses to write if the result would still not load.\n"
 	    "\n"
+	    "  butcher new <save.sv> --class NAME --name NAME [--level N] [--gold N]\n"
+	    "        Create a character, as the game would at level 1: starting\n"
+	    "        stats, life and mana for the class. --level runs it up through\n"
+	    "        real level-ups. It has no equipment -- the game builds starting\n"
+	    "        gear from item seeds, which cannot be synthesised -- so give it\n"
+	    "        gold and buy some.\n"
+	    "\n"
 	    "  butcher inspect <save.sv>\n"
 	    "        Show both copies of the character side by side -- the packed\n"
 	    "        one the selection screen reads, and the one inside a saved\n"
@@ -1209,6 +1328,8 @@ int cli_main(int argc, char **argv)
 		return cmd_fix(rest, argv + 2);
 	if (strcmp(argv[1], "inspect") == 0)
 		return cmd_inspect(rest, argv + 2);
+	if (strcmp(argv[1], "new") == 0)
+		return cmd_new(rest, argv + 2);
 	if (strcmp(argv[1], "export") == 0)
 		return cmd_export(rest, argv + 2);
 	if (strcmp(argv[1], "import") == 0)

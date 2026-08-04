@@ -225,6 +225,86 @@ static int stat_headroom(const PkPlayerStruct *h, HeroFlavor f)
 	return total;
 }
 
+/**
+ * Source/player.cpp:99-143 -- starting stats, indexed [class][attribute].
+ * Copied for the same reason as kMaxStats: player.cpp cannot be linked.
+ * If a value here ever disagrees with player.cpp, player.cpp is right.
+ */
+static const int kStartStats[6][4] = {
+	{ 30, 10, 20, 25 },  /* warrior   */
+	{ 20, 15, 30, 20 },  /* rogue     */
+	{ 15, 35, 15, 20 },  /* sorcerer  */
+	{ 25, 15, 25, 20 },  /* monk      -- Hellfire */
+	{ 20, 20, 25, 20 },  /* bard      -- Hellfire */
+	{ 40, 0, 20, 25 },   /* barbarian -- Hellfire */
+};
+
+int hero_create(PkPlayerStruct *h, HeroFlavor f, int pclass, const char *name,
+    char *err)
+{
+	if (pclass < 0 || pclass >= hero_num_classes(f)) {
+		seterr(err, "class %d does not exist in %s", pclass, hero_flavor_name(f));
+		return 0;
+	}
+	if (!hero_name_valid(name, err))
+		return 0;
+
+	memset(h, 0, sizeof(*h));
+
+	/* Empty is 0xFFFF, not zero -- a zeroed slot reads as item index 0. */
+	for (int i = 0; i < NUM_INVLOC; i++)
+		h->InvBody[i].idx = 0xFFFF;
+	for (int i = 0; i < NUM_INV_GRID_ELEM; i++)
+		h->InvList[i].idx = 0xFFFF;
+	for (int i = 0; i < MAXBELTITEMS; i++)
+		h->SpdList[i].idx = 0xFFFF;
+
+	strncpy(h->pName, name, PLR_NAME_LEN - 1);
+	h->pClass = (char)pclass;
+
+	h->pBaseStr = (BYTE)kStartStats[pclass][ATTRIB_STR];
+	h->pBaseMag = (BYTE)kStartStats[pclass][ATTRIB_MAG];
+	h->pBaseDex = (BYTE)kStartStats[pclass][ATTRIB_DEX];
+	h->pBaseVit = (BYTE)kStartStats[pclass][ATTRIB_VIT];
+	h->pStatPts = 0;
+
+	/* CreatePlayer: (vitality + 10) << 6, doubled for a Warrior or Barbarian,
+	 * half again for a Rogue, Monk or Bard. */
+	int life = (h->pBaseVit + 10) << HERO_FIXED_SHIFT;
+	if (pclass == PC_WARRIOR || pclass == 5 /* Barbarian */)
+		life <<= 1;
+	else if (pclass == PC_ROGUE || pclass == 3 /* Monk */ || pclass == 4 /* Bard */)
+		life += life >> 1;
+	h->pHPBase = life;
+	h->pMaxHPBase = life;
+
+	/* And magic << 6, doubled for a Sorcerer, three quarters again for a Bard,
+	 * half again for a Rogue or Monk. */
+	int mana = h->pBaseMag << HERO_FIXED_SHIFT;
+	if (pclass == PC_SORCERER)
+		mana <<= 1;
+	else if (pclass == 4 /* Bard */)
+		mana += mana * 3 / 4;
+	else if (pclass == PC_ROGUE || pclass == 3 /* Monk */)
+		mana += mana >> 1;
+	h->pManaBase = mana;
+	h->pMaxManaBase = mana;
+
+	h->pLevel = 1;
+	h->pExperience = 0;
+
+	/* A Sorcerer alone starts knowing a spell. The class skills the other
+	 * classes get live in _pAblSpells, which the game derives from the class
+	 * and a save does not carry. */
+	if (pclass == PC_SORCERER) {
+		h->pMemSpells = SPELLBIT(SPL_FIREBOLT);
+		h->pSplLvl[SPL_FIREBOLT] = 2;
+	}
+
+	h->plrlevel = 0; /* town */
+	return 1;
+}
+
 int hero_next_exper(const PkPlayerStruct *h)
 {
 	/* _pNextExper is ExpLvlsTbl[_pLevel], i.e. what the next level costs. */

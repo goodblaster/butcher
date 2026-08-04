@@ -125,6 +125,23 @@ int hero_set_spell_level(PkPlayerStruct *h, HeroFlavor f, int spell, int level,
     char *err);
 
 /**
+ * Build a level-1 character the way CreatePlayer does.
+ *
+ * Starting stats, life, mana and the Sorcerer's Firebolt, exactly as
+ * Source/player.cpp sets them for a new hero.
+ *
+ * **The character has no equipment.** The game gives a new hero its starting
+ * gear through the item generator, which builds items from a seed; butcher
+ * cannot synthesise those, so this produces a valid, playable, naked
+ * character. Gold can be added afterwards -- a new save has no game in
+ * progress, so hero_set_gold is unrestricted.
+ *
+ * @return nonzero on success; otherwise @p err says what was wrong.
+ */
+int hero_create(PkPlayerStruct *h, HeroFlavor f, int pclass, const char *name,
+    char *err);
+
+/**
  * Raise the character to @p level the way the game would.
  *
  * Setting experience alone does not work. ValidatePlayer runs from
