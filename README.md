@@ -46,7 +46,7 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 609 tests.
+package manager. `make check` builds the tool and runs 623 tests.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -312,12 +312,11 @@ butcher writes **both**, so edits stick. `list` and the picker mark those saves
 with `!`, and the character sheet carries a banner, because saving then rewrites
 far more of the file than the sheet suggests.
 
-**One exception: gold.** Items inside a saved game are stored as full structs
-rather than the packed 17-byte seeds in `hero`, and butcher does not edit them
-yet. Gold is really a set of item stacks, so a gold change reaches the selection
-screen and is then recomputed from the stacks the saved game still holds.
-butcher warns when an edit moves the inventory. Everything else — stats, level,
-experience, spells, name, class — applies to both copies.
+Gold included: the stacks inside the saved game are rewritten too, since
+`ValidatePlayer` recomputes the total from them every tick. Items are matched
+between the two copies **by seed**, and new gold piles are cloned from one the
+game itself wrote rather than synthesised — so a character carrying no gold at
+all has nothing to copy, and that is refused rather than guessed at.
 
 How this works, and why nothing in it trusts a computed offset, is in
 [docs/GAMEFILE.md](docs/GAMEFILE.md).
@@ -449,7 +448,7 @@ data inside an archive.
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 609 checks |
+| `tests/` | Nine suites, 623 checks |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

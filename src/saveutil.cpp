@@ -210,6 +210,8 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 	}
 
 	GameLoc loc;
+	int items_moved = 0;
+	int items_synced = 0;
 	if (game != NULL) {
 		/* Verified against the character as it is on disk, not as it is being
 		 * changed to -- the two copies agree only before the edit. */
@@ -219,6 +221,27 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 			return 0;
 		}
 		game_apply(game, glen, &loc, h);
+
+		/*
+		 * The inventory only when it actually moved. Gold is the reason this
+		 * matters: ValidatePlayer recomputes the total from the stacks every
+		 * tick, so a gold change that reaches only the packed copy is undone
+		 * on the first frame of play.
+		 */
+		items_moved = memcmp(old.InvBody, h->InvBody, sizeof(old.InvBody)) != 0
+		    || memcmp(old.InvList, h->InvList, sizeof(old.InvList)) != 0
+		    || memcmp(old.InvGrid, h->InvGrid, sizeof(old.InvGrid)) != 0
+		    || memcmp(old.SpdList, h->SpdList, sizeof(old.SpdList)) != 0
+		    || old._pNumInv != h->_pNumInv;
+
+		if (items_moved) {
+			if (game_apply_inventory(game, glen, &loc, &old, h, gerr) < 0) {
+				free(game);
+				seterr(err, "%s", gerr);
+				return 0;
+			}
+			items_synced = 1;
+		}
 	}
 
 	if (backup && !save_backup(path, err)) {
@@ -241,19 +264,8 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 			    gerr);
 			return 0;
 		}
-		if (sync != NULL) {
-			/*
-			 * Items are not carried across. Anything that moved the inventory
-			 * -- gold above all -- lands in "hero" only, and the game will
-			 * recompute the total from the stacks the saved game still holds.
-			 */
-			int items_moved = memcmp(old.InvBody, h->InvBody, sizeof(old.InvBody)) != 0
-			    || memcmp(old.InvList, h->InvList, sizeof(old.InvList)) != 0
-			    || memcmp(old.InvGrid, h->InvGrid, sizeof(old.InvGrid)) != 0
-			    || memcmp(old.SpdList, h->SpdList, sizeof(old.SpdList)) != 0
-			    || old._pNumInv != h->_pNumInv;
-			*sync = items_moved ? SAVE_GAME_SYNCED_NO_ITEMS : SAVE_GAME_SYNCED;
-		}
+		if (sync != NULL)
+			*sync = items_synced ? SAVE_GAME_SYNCED_ITEMS : SAVE_GAME_SYNCED;
 	}
 
 	/* Never leave a save in place that does not read back as written. */

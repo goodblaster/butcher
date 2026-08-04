@@ -230,13 +230,9 @@ static int commit(const char *path, const PkPlayerStruct *h, HeroFlavor f, int b
 	printf("saved.\n");
 	if (sync == SAVE_GAME_SYNCED)
 		printf("the saved game in progress was updated to match.\n");
-	else if (sync == SAVE_GAME_SYNCED_NO_ITEMS)
-		fprintf(stderr,
-		    "\nwarning: the saved game was updated, but the inventory was not.\n"
-		    "  butcher cannot yet edit items inside a game in progress, and gold\n"
-		    "  is stored as item stacks. The new total will show on the character\n"
-		    "  selection screen and then be recomputed from the stacks the saved\n"
-		    "  game still holds. Everything else in this edit will stick.\n");
+	else if (sync == SAVE_GAME_SYNCED_ITEMS)
+		printf("the saved game in progress was updated to match, inventory "
+		       "included.\n");
 	hero_warnings(h, f, warn_line);
 	return 0;
 }

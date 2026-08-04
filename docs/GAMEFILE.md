@@ -109,20 +109,19 @@ against a real Diablo saved game. It does not need a special case: if that
 layout were different, verification fails and the save is refused rather than
 damaged.
 
-## Not covered: the inventory
+## The inventory
 
-`game` stores full `ItemStruct`s rather than the packed 17-byte form in `hero`,
-and butcher does not write them. Gold is really a set of item stacks and
-`ValidatePlayer` recomputes `_pGold` from them every tick, so a gold change
-reaches `hero` and is then undone.
+`game` stores full `ItemStruct`s where the packed copy stores 17-byte seeds.
+This matters for gold: `ValidatePlayer` recomputes `_pGold` from the stacks
+every tick, so changing the packed copy alone is undone on the first frame.
 
-The layout is mapped, though, and verified on both real saves:
+Anchored on `InvGrid` — 40 bytes byte-identical in both copies, with `_pNumInv`
+as the `int32` immediately before it.
 
 | | |
 |---|---|
-| anchor | `InvGrid`, 40 bytes identical to the packed copy, with `_pNumInv` as the `int32` directly before it |
 | `ItemStruct` in file | **372 bytes** (one 8-byte pointer becomes 4) |
-| `_iSeed` | +0 — equals the packed item's `iSeed`, giving a per-item cross-check |
+| `_iSeed` | +0 — equals the packed item's `iSeed` |
 | `_itype` | +8 (`ITYPE_GOLD` = 11) |
 | `_iCurs` | +192 |
 | `_ivalue` | +196 |
@@ -130,13 +129,31 @@ The layout is mapped, though, and verified on both real saves:
 | `InvList[40]` | `_pNumInv − 40×372` |
 | `SpdList[8]` | after `InvGrid` |
 
-Confirmed by walking each packed gold stack to its counterpart: the Rogue's
-slot 12 held `_itype=11, _ivalue=2554, _iSeed=227478953` against a packed seed
-of `227478953`, and the Monk's slot 7 likewise. Both summed to the cached
-`pGold` exactly.
+**Items are matched by seed, not by position.** `hero_set_gold` compacts the
+list — removing gold stacks shifts everything after them down — so an item that
+merely moved has to be relocated rather than rebuilt. The packed `iSeed`
+equalling the saved game's `_iSeed` makes that exact, and gives a per-item
+validity proof independent of where anything sits.
 
-What is left is the writing. Changing an existing stack's value needs
-`_ivalue` and `_iCurs`; adding one needs a whole `ItemStruct`, best done by
-cloning an existing gold item rather than synthesising 372 bytes — plus
-`_pNumInv` and `InvGrid`, which butcher already computes correctly for the
-packed copy.
+**New gold stacks are cloned, never synthesised.** A pile the game itself wrote
+is copied and only three fields changed: `_iSeed`, `_ivalue`, and `_iCurs`
+(large at ≥2500, small at ≤1000, medium between — `Source/inv.cpp`). Every
+other byte is the game's own. A character carrying no gold has nothing to clone
+from, and that is refused rather than guessed at.
+
+It refuses, rather than guessing, when:
+
+- any item in the on-disk character is not found in the saved game by seed —
+  the two copies have diverged and writing would corrupt one of them;
+- an item is neither matched nor gold, so there is nothing to build it from;
+- new gold is needed and the character carries none.
+
+A 90,000-gold edit on a real save moved 1,317 bytes, all between `_pGold` and
+the end of `InvGrid`, and re-running it changed nothing.
+
+## Still not covered
+
+Equipment (`InvBody`) and the belt (`SpdList`) are located but not written —
+butcher does not edit those anyway. Non-gold items cannot be created, only
+moved, because everything but gold is generated from a seed by the game's own
+item generator.

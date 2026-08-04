@@ -758,12 +758,8 @@ int tui_main(int argc, char **argv)
 						                : std::string("saved");
 						if (sync == SAVE_GAME_SYNCED)
 							status += " (saved game updated too)";
-						else if (sync == SAVE_GAME_SYNCED_NO_ITEMS) {
-							status += " -- but the inventory was not carried into "
-							          "the saved game, so the gold total will not "
-							          "stick";
-							status_color = Color::Yellow;
-						}
+						else if (sync == SAVE_GAME_SYNCED_ITEMS)
+							status += " (saved game and inventory updated too)";
 						status_color = Color::Green;
 					} else {
 						status = std::string("failed: ") + werr;

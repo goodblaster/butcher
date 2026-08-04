@@ -70,16 +70,8 @@ int save_backup_to(const char *path, char *chosen, size_t chosen_len, char *err)
 typedef enum SaveGameSync {
 	SAVE_GAME_ABSENT = 0, /**< no game in progress; nothing to do */
 	SAVE_GAME_SYNCED,     /**< the saved game was updated to match */
-	/**
-	 * Updated, but the edit also moved inventory this cannot carry across.
-	 *
-	 * The saved game stores full ItemStructs where the packed copy stores
-	 * 17-byte seeds, so items are not synced. Gold is the case that matters:
-	 * it is really a set of item stacks, and the game recomputes the total
-	 * from them -- so a gold change reaches the selection screen and is then
-	 * recomputed away. Callers must say so.
-	 */
-	SAVE_GAME_SYNCED_NO_ITEMS,
+	/** Updated, including the inventory -- so gold changes hold. */
+	SAVE_GAME_SYNCED_ITEMS,
 } SaveGameSync;
 
 /**

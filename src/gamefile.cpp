@@ -355,7 +355,171 @@ int game_locate(const BYTE *buf, DWORD len, const PkPlayerStruct *hero,
 
 	loc->name = found;
 	loc->discriminating = found_disc;
+
+	/*
+	 * The inventory, anchored separately. InvGrid is 40 bytes that are
+	 * byte-identical in both copies, and _pNumInv is the int32 right before it
+	 * -- together specific enough to be trusted, and cheap to check.
+	 *
+	 * Not finding it is not a failure. The two copies diverge as soon as an
+	 * earlier butcher release changed gold in the packed copy alone, and the
+	 * stats above are still perfectly writable; only the inventory is refused.
+	 */
+	int grid_hits = 0;
+	long grid_at = -1;
+	for (long i = 4; i + NUM_INV_GRID_ELEM <= (long)len; i++) {
+		if (memcmp(buf + i, hero->InvGrid, NUM_INV_GRID_ELEM) != 0)
+			continue;
+		if (rd32(buf + i - 4) != (int)hero->_pNumInv)
+			continue;
+		long list = i - 4 - (long)NUM_INV_GRID_ELEM * GAME_ITEM_SIZE;
+		if (list < 0)
+			continue;
+		grid_hits++;
+		grid_at = i;
+	}
+	if (grid_hits == 1) {
+		loc->inv_found = 1;
+		loc->inv_grid = grid_at;
+		loc->inv_numinv = grid_at - 4;
+		loc->inv_list = grid_at - 4 - (long)NUM_INV_GRID_ELEM * GAME_ITEM_SIZE;
+	}
 	return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Inventory                                                           */
+/* ------------------------------------------------------------------ */
+
+/** The item record for InvList[@p slot]. */
+static BYTE *inv_slot(BYTE *buf, const GameLoc *loc, int slot)
+{
+	return buf + loc->inv_list + (long)slot * GAME_ITEM_SIZE;
+}
+
+/** Source/inv.cpp: the pile graphic follows the amount. */
+static int gold_cursor(int value)
+{
+	if (value >= GOLD_MEDIUM_LIMIT)
+		return ICURS_GOLD_LARGE;
+	if (value <= GOLD_SMALL_LIMIT)
+		return ICURS_GOLD_SMALL;
+	return ICURS_GOLD_MEDIUM;
+}
+
+int game_apply_inventory(BYTE *buf, DWORD len, const GameLoc *loc,
+    const PkPlayerStruct *old, const PkPlayerStruct *neu, char *err)
+{
+	if (!loc->inv_found) {
+		seterr(err, "could not find the inventory inside the saved game; the two "
+		            "copies of this character have already diverged, so the "
+		            "items were left alone");
+		return -1;
+	}
+	if (loc->inv_list < 0
+	    || (DWORD)(loc->inv_grid + NUM_INV_GRID_ELEM) > len) {
+		seterr(err, "the inventory lies outside the saved game");
+		return -1;
+	}
+	if (old->_pNumInv > NUM_INV_GRID_ELEM || neu->_pNumInv > NUM_INV_GRID_ELEM) {
+		seterr(err, "the item count is beyond the %d inventory slots",
+		    NUM_INV_GRID_ELEM);
+		return -1;
+	}
+
+	/*
+	 * Every item the character had must be findable in the saved game by seed.
+	 * That is the proof the two copies really do describe the same inventory,
+	 * and it is checked before a byte is written.
+	 */
+	for (int i = 0; i < old->_pNumInv; i++) {
+		const BYTE *rec = inv_slot(buf, loc, i);
+		if ((DWORD)rd32(rec + GAME_ITEM_SEED) != old->InvList[i].iSeed) {
+			seterr(err, "inventory slot %d disagrees between the two copies of "
+			            "this character (seed %u against %u); the items were "
+			            "left alone",
+			    i, (unsigned)old->InvList[i].iSeed,
+			    (unsigned)rd32(rec + GAME_ITEM_SEED));
+			return -1;
+		}
+	}
+
+	/* Snapshot, so items can be moved between slots without clobbering. */
+	size_t span = (size_t)NUM_INV_GRID_ELEM * GAME_ITEM_SIZE;
+	BYTE *before = (BYTE *)malloc(span);
+	if (before == NULL) {
+		seterr(err, "out of memory");
+		return -1;
+	}
+	memcpy(before, buf + loc->inv_list, span);
+
+	/*
+	 * A gold item the game itself wrote, to clone new stacks from -- taken
+	 * from the snapshot, not the live buffer. Pointing it at the buffer left
+	 * it dangling the moment the loop below overwrote that slot, and every
+	 * cloned pile came out with whatever had landed there instead.
+	 */
+	const BYTE *gold_template = NULL;
+	for (int i = 0; i < old->_pNumInv; i++) {
+		const BYTE *rec = before + (size_t)i * GAME_ITEM_SIZE;
+		if (rd32(rec + GAME_ITEM_ITYPE) == ITYPE_GOLD) {
+			gold_template = rec;
+			break;
+		}
+	}
+
+	int written = 0;
+	for (int i = 0; i < neu->_pNumInv; i++) {
+		const PkItemStruct *pk = &neu->InvList[i];
+		const BYTE *src = NULL;
+
+		/* The same item, wherever it used to sit. */
+		for (int j = 0; j < old->_pNumInv; j++) {
+			const BYTE *cand = before + (size_t)j * GAME_ITEM_SIZE;
+			if ((DWORD)rd32(cand + GAME_ITEM_SEED) == pk->iSeed
+			    && old->InvList[j].idx == pk->idx) {
+				src = cand;
+				break;
+			}
+		}
+
+		if (src == NULL) {
+			if (pk->idx != IDI_GOLD) {
+				free(before);
+				seterr(err, "inventory slot %d holds an item that is not in the "
+				            "saved game and is not gold, so there is nothing to "
+				            "build it from; the items were left alone",
+				    i);
+				return -1;
+			}
+			if (gold_template == NULL) {
+				free(before);
+				seterr(err, "adding gold needs an existing gold pile to copy, and "
+				            "this character is carrying none. Pick up some gold "
+				            "in game first, or edit gold with no game in progress");
+				return -1;
+			}
+			src = gold_template;
+		}
+
+		BYTE *dst = inv_slot(buf, loc, i);
+		if (src != dst)
+			memmove(dst, src, GAME_ITEM_SIZE);
+
+		if (pk->idx == IDI_GOLD) {
+			/* Only the three things that make one pile differ from another. */
+			wr32(dst + GAME_ITEM_SEED, (int)pk->iSeed);
+			wr32(dst + GAME_ITEM_IVALUE, pk->wValue);
+			wr32(dst + GAME_ITEM_ICURS, gold_cursor(pk->wValue));
+		}
+		written++;
+	}
+
+	free(before);
+
+	wr32(buf + loc->inv_numinv, neu->_pNumInv);
+	memcpy(buf + loc->inv_grid, neu->InvGrid, NUM_INV_GRID_ELEM);
+	return written;
 }
 
 /* ------------------------------------------------------------------ */

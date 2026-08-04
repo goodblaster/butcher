@@ -20,6 +20,8 @@
 
 #include "../src/gamefile.h"
 
+#include <sys/types.h>
+
 /* ------------------------------------------------------------------ */
 
 static int g_pass, g_fail;
@@ -109,7 +111,16 @@ static void base_hero(PkPlayerStruct *p, const char *name, int pclass)
 #define GAME_FIXTURE_LEVELS 25
 #define GAME_FIXTURE_RECORD (43 + GAME_FIXTURE_LEVELS * 8)
 #define GAME_FIXTURE_NAME (GAME_FIXTURE_RECORD + 320)
-#define GAME_FIXTURE_LEN (GAME_FIXTURE_NAME + 512)
+/*
+ * The inventory too, or the part of gamefile.cpp that writes items would never
+ * be exercised. Its position does not have to match a real save -- the anchor
+ * is searched for -- but InvList really is 40 full ItemStructs, so the blob is
+ * some 15 KB and spans several MPQ sectors.
+ */
+#define GAME_FIXTURE_INVLIST (GAME_FIXTURE_NAME + 600)
+#define GAME_FIXTURE_NUMINV (GAME_FIXTURE_INVLIST + NUM_INV_GRID_ELEM * GAME_ITEM_SIZE)
+#define GAME_FIXTURE_GRID (GAME_FIXTURE_NUMINV + 4)
+#define GAME_FIXTURE_LEN (GAME_FIXTURE_GRID + NUM_INV_GRID_ELEM + 64)
 
 static void put32(BYTE *p, int v)
 {
@@ -151,6 +162,22 @@ static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
 	rec[120] = (BYTE)h->pLevel;
 	put32(rec + 124, h->pExperience);
 	put32(rec + 140, h->pGold);
+
+	/*
+	 * The inventory, as full item records. Only the three fields gamefile.cpp
+	 * reads are filled; the rest stays zero, which is enough for it to match
+	 * items by seed and recognise gold by type.
+	 */
+	for (int i = 0; i < h->_pNumInv; i++) {
+		BYTE *it = out + GAME_FIXTURE_INVLIST + (size_t)i * GAME_ITEM_SIZE;
+		put32(it + GAME_ITEM_SEED, (int)h->InvList[i].iSeed);
+		put32(it + GAME_ITEM_ITYPE,
+		    h->InvList[i].idx == IDI_GOLD ? ITYPE_GOLD : ITYPE_MISC);
+		put32(it + GAME_ITEM_IVALUE,
+		    h->InvList[i].idx == IDI_GOLD ? h->InvList[i].wValue : 0);
+	}
+	put32(out + GAME_FIXTURE_NUMINV, h->_pNumInv);
+	memcpy(out + GAME_FIXTURE_GRID, h->InvGrid, NUM_INV_GRID_ELEM);
 }
 
 /**
@@ -170,7 +197,7 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 	memset(hash, 0xFF, MPQ_INDEX_ENTRIES * sizeof(_HASHENTRY));
 	InitHash();
 
-	static BYTE body[65536];
+	static BYTE body[131072];
 	DWORD *offs = (DWORD *)body;
 	BYTE sector[MPQ_SECTOR_SIZE];
 	memcpy(sector, blob, 1288);
@@ -208,20 +235,28 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 		memcpy(gbuf, plain, sizeof(plain));
 		codec_encode(gbuf, sizeof(plain), genc, SAVE_PASSWORD_SINGLE);
 
-		/* Stored the way the game stores it: one imploded sector. */
-		BYTE gsector[MPQ_SECTOR_SIZE];
-		memcpy(gsector, gbuf, genc);
-		free(gbuf);
-		int gstored = PkwareCompress(gsector, (int)genc);
-
+		/* Stored the way the game stores it: imploded, in 4096-byte sectors. */
+		DWORD nsec = (genc + MPQ_SECTOR_SIZE - 1) / MPQ_SECTOR_SIZE;
 		DWORD gstart = total;
 		DWORD *goffs = (DWORD *)(body + gstart);
-		goffs[0] = 8;
-		goffs[1] = 8 + (DWORD)gstored;
-		memcpy(body + gstart + 8, gsector, (size_t)gstored);
+		DWORD pos = (nsec + 1) * (DWORD)sizeof(DWORD);
+
+		for (DWORD s = 0; s < nsec; s++) {
+			DWORD raw = genc - s * MPQ_SECTOR_SIZE;
+			if (raw > MPQ_SECTOR_SIZE)
+				raw = MPQ_SECTOR_SIZE;
+			BYTE gsector[MPQ_SECTOR_SIZE];
+			memcpy(gsector, gbuf + s * MPQ_SECTOR_SIZE, raw);
+			int gstored = PkwareCompress(gsector, (int)raw);
+			goffs[s] = pos;
+			memcpy(body + gstart + pos, gsector, (size_t)gstored);
+			pos += (DWORD)gstored;
+		}
+		goffs[nsec] = pos;
+		free(gbuf);
 
 		block[1].offset = (int)(MPQ_DATA_OFFSET + gstart);
-		block[1].sizealloc = (int)goffs[1];
+		block[1].sizealloc = (int)pos;
 		block[1].sizefile = (int)genc;
 		block[1].flags = (int)(MPQ_FLAG_EXISTS | MPQ_FLAG_IMPLODE);
 		DWORD gi = Hash("game", 0) & 0x7FF;
@@ -231,7 +266,7 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 		hash[gi].hashcheck[1] = (int)Hash("game", 2);
 		hash[gi].lcid = 0;
 		hash[gi].block = 1;
-		total = gstart + goffs[1];
+		total = gstart + pos;
 	}
 
 	memset(&hdr, 0, sizeof(hdr));
@@ -383,11 +418,7 @@ static void check_game_in_progress(void)
 		remove(broken);
 	}
 
-	/*
-	 * Items are not carried into the saved game, so an edit that moves the
-	 * inventory has to say so. Gold is the case that matters: the game
-	 * recomputes the total from the stacks, which stay as they were.
-	 */
+	/* A stats-only edit does not touch the inventory. */
 	{
 		SaveGameSync sync = SAVE_GAME_ABSENT;
 		PkPlayerStruct stats = back;
@@ -395,13 +426,88 @@ static void check_game_in_progress(void)
 		ok(save_commit_ex(playing, &stats, 0, &sync, err)
 		        && sync == SAVE_GAME_SYNCED,
 		    "a stats-only edit reports a clean sync");
+	}
 
-		SaveGameSync sync2 = SAVE_GAME_ABSENT;
-		PkPlayerStruct rich = stats;
-		ok(hero_set_gold(&rich, FLAVOR_DIABLO, 50000, err), "give the character gold");
-		ok(save_commit_ex(playing, &rich, 0, &sync2, err)
-		        && sync2 == SAVE_GAME_SYNCED_NO_ITEMS,
-		    "an inventory edit reports that items did not go across");
+	/*
+	 * Gold, which is the whole reason the inventory has to be written.
+	 * ValidatePlayer recomputes the total from the stacks every tick, so a
+	 * change that reaches only the packed copy is undone on the first frame.
+	 */
+	{
+		char gpath[SAVE_PATH_MAX];
+		snprintf(gpath, sizeof(gpath), "%s", tmppath("single_7.sv"));
+		base_hero(&h, "Aidan", PC_WARRIOR);
+		ok(hero_set_gold(&h, FLAVOR_DIABLO, 3000, err), "a character with one pile");
+		make_save_ex(gpath, &h, /*with_game=*/1);
+
+		PkPlayerStruct rich = h;
+		ok(hero_set_gold(&rich, FLAVOR_DIABLO, 40000, err), "raise it to 40000");
+
+		SaveGameSync sync = SAVE_GAME_ABSENT;
+		err[0] = '\0';
+		int wrote = save_commit_ex(gpath, &rich, 0, &sync, err);
+		if (!wrote)
+			printf("        %s\n", err);
+		ok(wrote && sync == SAVE_GAME_SYNCED_ITEMS,
+		    "the commit reports the inventory went across too");
+
+		/* The stacks inside the saved game must now add up. */
+		DWORD glen = 0;
+		int present = 0;
+		BYTE *g = game_read(gpath, &glen, &present, err);
+		GameLoc loc;
+		PkPlayerStruct on_disk;
+		ok(g != NULL && save_read_hero(gpath, &on_disk, NULL, err)
+		        && game_locate(g, glen, &on_disk, &loc, err),
+		    "the saved game still verifies against the packed copy");
+		ok(loc.inv_found, "  ...and its inventory is still locatable");
+
+		if (g != NULL && loc.inv_found) {
+			int total = 0, stacks = 0, seeds_agree = 1;
+			for (int i = 0; i < on_disk._pNumInv; i++) {
+				const BYTE *rec = g + loc.inv_list + (long)i * GAME_ITEM_SIZE;
+				int type, val, seed;
+				memcpy(&type, rec + GAME_ITEM_ITYPE, 4);
+				memcpy(&val, rec + GAME_ITEM_IVALUE, 4);
+				memcpy(&seed, rec + GAME_ITEM_SEED, 4);
+				if (type != ITYPE_GOLD)
+					continue;
+				stacks++;
+				total += val;
+				/* The seed ties each written stack to its packed counterpart. */
+				if ((DWORD)seed != on_disk.InvList[i].iSeed)
+					seeds_agree = 0;
+			}
+			ok(total == 40000,
+			    "the gold stacks inside the saved game add up to the new total");
+			ok(stacks == 8, "  ...spread over eight piles of 5000");
+			ok(seeds_agree, "  ...each carrying the packed copy's seed");
+
+			int num = 0;
+			memcpy(&num, g + loc.inv_numinv, 4);
+			ok(num == on_disk._pNumInv, "_pNumInv agrees");
+			ok(memcmp(g + loc.inv_grid, on_disk.InvGrid, NUM_INV_GRID_ELEM) == 0,
+			    "and InvGrid was carried across");
+		}
+		free(g);
+
+		/* Adding gold needs a pile to clone; refuse rather than invent one. */
+		PkPlayerStruct broke = rich;
+		ok(hero_set_gold(&broke, FLAVOR_DIABLO, 0, err), "spend it all");
+		ok(save_commit_ex(gpath, &broke, 0, NULL, err), "which writes fine");
+
+		PkPlayerStruct again;
+		ok(save_read_hero(gpath, &again, NULL, err), "read it back");
+		ok(hero_set_gold(&again, FLAVOR_DIABLO, 5000, err), "try to add gold again");
+		err[0] = '\0';
+		ok(!save_commit_ex(gpath, &again, 0, NULL, err),
+		    "adding gold with no pile to copy is refused");
+		printf("        %s\n", err);
+
+		PkPlayerStruct after;
+		ok(save_read_hero(gpath, &after, NULL, err) && after.pGold == 0,
+		    "  ...and the save is left as it was");
+		remove(gpath);
 	}
 
 	/* A renamed character leaves junk after the terminator in "game" but not in
