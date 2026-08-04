@@ -14,6 +14,8 @@
 
 #include "../third_party/devilution/Source/encrypt.h"
 
+extern const int hf_idi_auric;
+
 #include <stdarg.h>
 #include <sys/stat.h>
 
@@ -279,37 +281,53 @@ static void check_gold(void)
 	}
 
 	/*
-	 * Hellfire allows twice as much per stack. ValidatePlayer does
-	 * `maxGold = GOLD_MAX_LIMIT; if (gbIsHellfire) maxGold *= 2;` and clamps
-	 * each stack to it every tick, so using the Diablo figure for both halved
-	 * what a Hellfire character could be given.
+	 * The doubled Hellfire stack belongs to the Auric Amulet, not to Hellfire.
+	 *
+	 * Two rules in the game look like they disagree. ValidatePlayer clamps each
+	 * stack to GOLD_MAX_LIMIT * (gbIsHellfire ? 2 : 1) every tick, which is a
+	 * ceiling and nothing more. CalcPlrItemVals sets MaxGold to the doubled
+	 * figure only with the amulet equipped, and otherwise calls StripTopGold,
+	 * which splits anything larger into a second pile. Reading only the first
+	 * rule made butcher hand out 10000-piles the game then broke up -- which is
+	 * how a character came to be carrying 5000, 6888 and 10000 at once.
 	 */
 	{
-		ok(hero_gold_stack_max(FLAVOR_DIABLO) == GOLD_MAX_LIMIT,
-		    "a Diablo stack holds GOLD_MAX_LIMIT");
-		ok(hero_gold_stack_max(FLAVOR_HELLFIRE) == GOLD_MAX_LIMIT * 2,
-		    "a Hellfire stack holds twice that");
-
-		PkPlayerStruct d, hf;
+		PkPlayerStruct d, hf, auric;
 		base_hero(&d, PC_WARRIOR);
 		base_hero(&hf, PC_WARRIOR);
-		ok(hero_gold_capacity(&hf, FLAVOR_HELLFIRE)
-		        == 2 * hero_gold_capacity(&d, FLAVOR_DIABLO),
-		    "  ...so a Hellfire character has twice the capacity");
+		base_hero(&auric, PC_WARRIOR);
+		auric.InvBody[INVLOC_AMULET].idx = (WORD)hf_idi_auric;
 
-		/* An amount Diablo cannot hold, that Hellfire can. */
+		ok(hero_gold_stack_max(FLAVOR_DIABLO, &d) == GOLD_MAX_LIMIT,
+		    "a Diablo stack holds GOLD_MAX_LIMIT");
+		ok(hero_gold_stack_max(FLAVOR_HELLFIRE, &hf) == GOLD_MAX_LIMIT,
+		    "so does a Hellfire one without the Auric Amulet");
+		ok(hero_gold_stack_max(FLAVOR_HELLFIRE, &auric) == GOLD_MAX_LIMIT * 2,
+		    "the amulet is what doubles it");
+		ok(hero_gold_stack_max(FLAVOR_DIABLO, &auric) == GOLD_MAX_LIMIT,
+		    "  ...and it is a Hellfire item, so Diablo is unaffected");
+
+		ok(hero_gold_capacity(&auric, FLAVOR_HELLFIRE)
+		        == 2 * hero_gold_capacity(&hf, FLAVOR_HELLFIRE),
+		    "capacity follows the same rule");
+
+		/* An amount only the amulet makes room for. */
 		int over = NUM_INV_GRID_ELEM * GOLD_MAX_LIMIT + 1;
-		ok(!hero_set_gold(&d, FLAVOR_DIABLO, over, err),
-		    "an amount past Diablo's capacity is refused");
-		ok(hero_set_gold(&hf, FLAVOR_HELLFIRE, over, err),
-		    "  ...and accepted for Hellfire");
-		ok(hero_gold_in_stacks(&hf) == over, "  ...totalling correctly");
+		ok(!hero_set_gold(&hf, FLAVOR_HELLFIRE, over, err),
+		    "past the plain capacity is refused even in Hellfire");
+		ok(hero_set_gold(&auric, FLAVOR_HELLFIRE, over, err),
+		    "  ...and accepted with the amulet");
+		ok(hero_gold_in_stacks(&auric) == over, "  ...totalling correctly");
 
+		/* No stack may exceed what the character's own limit allows. */
+		base_hero(&hf, PC_WARRIOR);
+		ok(hero_set_gold(&hf, FLAVOR_HELLFIRE, 30000, err), "gold without the amulet");
 		int biggest = 0;
 		for (int i = 0; i < hf._pNumInv; i++)
 			if (hf.InvList[i].idx == IDI_GOLD && hf.InvList[i].wValue > biggest)
 				biggest = hf.InvList[i].wValue;
-		ok(biggest <= GOLD_MAX_LIMIT * 2, "  ...with no stack over the Hellfire limit");
+		ok(biggest <= GOLD_MAX_LIMIT,
+		    "  ...is laid down in piles the game will not split");
 	}
 
 	/* Over capacity on an empty inventory. */

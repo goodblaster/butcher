@@ -568,7 +568,7 @@ int tui_main(int argc, char **argv)
 		    })));
 		/* A Hellfire pile holds twice a Diablo one, so this cannot be a
 		 * constant -- it read "at most 5,000" on a Hellfire character. */
-		int stack_max = hero_gold_stack_max(ed.entry.flavor);
+		int stack_max = hero_gold_stack_max(ed.entry.flavor, &h);
 		int nstacks = (ed.gold + stack_max - 1) / stack_max;
 		rows.push_back(text("   └ " + std::to_string(nstacks)
 		                  + (nstacks == 1 ? " stack of at most " : " stacks of at most ")

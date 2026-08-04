@@ -22,11 +22,14 @@ extern const int hf_num_classes;
 extern const int hf_max_spells;
 extern const int hf_num_levels;
 extern const int hf_max_lvls;
+extern const int hf_idi_auric;
 
 const int hf_num_classes = NUM_CLASSES;
 const int hf_max_spells = MAX_SPELLS;
 const int hf_num_levels = NUMLEVELS;
 const int hf_max_lvls = MAX_LVLS;
+/* The Auric Amulet, which is what doubles a Hellfire gold pile's limit. */
+const int hf_idi_auric = IDI_AURIC;
 
 /* The layout guarantee this whole approach rests on. */
 CT_ASSERT(sizeof(PkPlayerStruct) == 1266, hf_pack_still_1266);

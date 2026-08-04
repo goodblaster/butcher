@@ -170,12 +170,18 @@ int hero_free_inv_cells(const PkPlayerStruct *h);
 /**
  * Most gold one inventory stack can hold.
  *
- * GOLD_MAX_LIMIT in Diablo, and twice that in Hellfire -- ValidatePlayer does
- * `maxGold = GOLD_MAX_LIMIT; if (gbIsHellfire) maxGold *= 2;` and clamps every
- * stack to it on each tick. Using the Diablo figure for both halved the gold a
- * Hellfire character could be given.
+ * GOLD_MAX_LIMIT everywhere, except a Hellfire character wearing the Auric
+ * Amulet, who gets twice that.
+ *
+ * Two different rules in the game look like they disagree, and only one of
+ * them is the real limit. ValidatePlayer clamps each stack to
+ * `GOLD_MAX_LIMIT * (gbIsHellfire ? 2 : 1)` every tick, which is a ceiling and
+ * nothing more. CalcPlrItemVals sets `MaxGold` to the doubled figure *only*
+ * with the amulet equipped, and otherwise calls StripTopGold, which splits any
+ * stack above GOLD_MAX_LIMIT into another pile. Reading only the first rule
+ * made butcher hand out 10000-piles that the game then quietly broke up.
  */
-int hero_gold_stack_max(HeroFlavor f);
+int hero_gold_stack_max(HeroFlavor f, const PkPlayerStruct *h);
 
 /** Largest total hero_set_gold could store given current free space. */
 int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f);

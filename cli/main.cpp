@@ -863,6 +863,17 @@ static int cmd_fix(int argc, char **argv)
 	int n = hero_fix(&h, f, all, &log);
 
 	if (n == 0) {
+		/*
+		 * A repair can decline and still have something to say -- gold piles
+		 * that ought to be split but will not fit. Throwing the log away left
+		 * "nothing to repair" as the only output, which is not the same thing.
+		 */
+		if (log.n > 0) {
+			dl_report(&log, path, stdout);
+			dl_free(&log);
+			printf("\nnothing was changed.\n");
+			return 0;
+		}
 		dl_free(&log);
 		/*
 		 * Nothing to repair is not the same as nothing wrong: --all is what

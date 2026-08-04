@@ -24,6 +24,7 @@ extern SpellData spelldata_hf[];
 extern const int hf_num_classes;
 extern const int hf_max_spells;
 extern const int hf_num_levels;
+extern const int hf_idi_auric;
 
 /*
  * These two tables are copied from Source/player.cpp. They cannot be linked:
@@ -551,10 +552,17 @@ int hero_gold_in_stacks(const PkPlayerStruct *h)
 	return total;
 }
 
-int hero_gold_stack_max(HeroFlavor f)
+int hero_gold_stack_max(HeroFlavor f, const PkPlayerStruct *h)
 {
-	/* ValidatePlayer: maxGold = GOLD_MAX_LIMIT, doubled when gbIsHellfire. */
-	return f == FLAVOR_HELLFIRE ? GOLD_MAX_LIMIT * 2 : GOLD_MAX_LIMIT;
+	/*
+	 * CalcPlrItemVals, not ValidatePlayer: the doubled limit belongs to the
+	 * Auric Amulet. Without it the game sets MaxGold back to GOLD_MAX_LIMIT
+	 * and StripTopGold splits every larger pile.
+	 */
+	if (f == FLAVOR_HELLFIRE && h != NULL
+	    && h->InvBody[INVLOC_AMULET].idx == (WORD)hf_idi_auric)
+		return GOLD_MAX_LIMIT * 2;
+	return GOLD_MAX_LIMIT;
 }
 
 int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f)
@@ -568,12 +576,12 @@ int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f)
 	for (int i = 0; i < n; i++)
 		if (h->InvList[i].idx == IDI_GOLD)
 			cells++;
-	return cells * hero_gold_stack_max(f);
+	return cells * hero_gold_stack_max(f, h);
 }
 
 int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 {
-	const int stack_max = hero_gold_stack_max(f);
+	const int stack_max = hero_gold_stack_max(f, h);
 	PkPlayerStruct work = *h;
 	int remap[NUM_INV_GRID_ELEM];
 	int kept = 0;
@@ -847,6 +855,35 @@ void hero_check(const PkPlayerStruct *h, HeroFlavor f, DiagList *dl)
 
 	/* Advisories: legal, but probably not intended. */
 	int stacked = hero_gold_in_stacks(h);
+	/*
+	 * A pile larger than the character's own limit. The game does not clamp it
+	 * -- StripTopGold splits it into another pile -- so the total survives but
+	 * the inventory quietly gains entries, and can run out of room.
+	 */
+	{
+		int smax = hero_gold_stack_max(f, h);
+		int over = 0, biggest = 0;
+		int n = h->_pNumInv > NUM_INV_GRID_ELEM ? NUM_INV_GRID_ELEM : h->_pNumInv;
+		for (int i = 0; i < n; i++) {
+			if (h->InvList[i].idx != IDI_GOLD)
+				continue;
+			if (h->InvList[i].wValue > smax) {
+				over++;
+				if (h->InvList[i].wValue > biggest)
+					biggest = h->InvList[i].wValue;
+			}
+		}
+		if (over > 0)
+			dl_add(dl, DIAG_WARNING, "gold",
+			    "%d gold pile%s more than %d, the most this character can hold in "
+			    "one (the largest is %d). %s The game splits the excess into new "
+			    "piles on load, so the total is safe but the inventory grows",
+			    over, over == 1 ? " holds" : "s hold", smax, biggest,
+			    f == FLAVOR_HELLFIRE
+			        ? "Only the Auric Amulet raises that to 10000."
+			        : "");
+	}
+
 	if (stacked != h->pGold)
 		dl_add(dl, DIAG_WARNING, "gold",
 		    "cached total is %d but the inventory holds %d; the game recomputes "
@@ -1274,6 +1311,37 @@ int hero_fix(PkPlayerStruct *h, HeroFlavor f, int settle_warnings, DiagList *log
 
 	/* ---- gold ---- */
 	if (settle_warnings) {
+		/* Piles above the character's limit: lay the same total down again at
+		 * a size the game will not split. */
+		int smax = hero_gold_stack_max(f, h);
+		int oversized = 0;
+		int ninv = h->_pNumInv > NUM_INV_GRID_ELEM ? NUM_INV_GRID_ELEM : h->_pNumInv;
+		for (int i = 0; i < ninv; i++)
+			if (h->InvList[i].idx == IDI_GOLD && h->InvList[i].wValue > smax)
+				oversized++;
+		if (oversized > 0) {
+			int total = hero_gold_in_stacks(h);
+			char gerr[HERO_ERR_LEN];
+			if (hero_set_gold(h, f, total, gerr)) {
+				dl_add(log, DIAG_NOTE, "gold",
+				    "%d pile%s larger than %d; the same %d was laid out again in "
+				    "piles the game will not split",
+				    oversized, oversized == 1 ? " was" : "s were", smax, total);
+				changed++;
+			} else {
+				/*
+				 * Not a failure to hide: splitting needs a free cell per new
+				 * pile, and there may be fewer than the split would want.
+				 */
+				dl_add(log, DIAG_NOTE, "gold",
+				    "%d pile%s larger than %d, but re-laying %d at that size needs "
+				    "more inventory room than there is, so they were left alone. "
+				    "The game splits them itself on load and needs a free cell for "
+				    "each new pile -- carry less, or make space",
+				    oversized, oversized == 1 ? " is" : "s are", smax, total);
+			}
+		}
+
 		int stacked = hero_gold_in_stacks(h);
 		if (stacked != h->pGold) {
 			dl_add(log, DIAG_NOTE, "gold",
