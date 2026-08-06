@@ -13,6 +13,7 @@
  *   butcher <save> --render       draw one frame and exit (no terminal needed)
  *   butcher <save> --tab N        select a pane before rendering
  *   butcher <save> --focus N      place the cursor before rendering
+ *   butcher <save> --rows N       render at that height, to see a small window
  *   butcher <dir>  --new          open the create form before rendering
  */
 #include "../src/charjson.h"
@@ -25,10 +26,13 @@
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "ftxui/dom/node.hpp"
+#include "ftxui/dom/requirement.hpp"
 #include "ftxui/screen/screen.hpp"
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -52,6 +56,61 @@ std::string Leaf(const std::string &path)
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+/*
+ * The height --render draws onto, which --rows overrides. It is a variable
+ * rather than a constant because Windowed() has to assume it: outside the
+ * event loop there is no screen to ask how tall the terminal is, and a short
+ * render is the only way to see what a short terminal would do.
+ */
+int render_rows = 44;
+
+/*
+ * The height each screen stops shrinking at. Below it the terminal becomes a
+ * window onto a layout that keeps its full size.
+ *
+ * The sheet spends about twelve rows on chrome -- header, path, tab bar,
+ * diagnostics, status, key hints and the border -- so this leaves a handful
+ * for the pane itself. The picker spends six.
+ */
+const int kSheetMinRows = 18;
+const int kPickerMinRows = 9;
+
+/**
+ * Stop shrinking; start scrolling.
+ *
+ * FTXUI's vbox has no floor. When the space runs out it takes it from every
+ * child in proportion (box_helper::ComputeShrinkHard), so a short terminal
+ * does not clip a screen, it compresses all of it at once and rows quietly
+ * stop being drawn -- including the key hints that would say how to reach
+ * what went missing. Past `rows` the layout keeps its height and the frame
+ * scrolls to whatever holds `focus`, which MarkRow already puts on the
+ * cursor row.
+ *
+ * Height only. The sliders are `flex` and degrade gracefully in a narrow
+ * window, and a short slider is worth more than one that keeps its length by
+ * pushing its own label off the side.
+ */
+Element Windowed(Element body, int rows)
+{
+	ScreenInteractive *active = ScreenInteractive::Active();
+	/* Less the border, which is applied outside this and always drawn. */
+	int avail = (active != nullptr ? active->dimy() : render_rows) - 2;
+	/*
+	 * The filler takes the spare row. Frame measures a box as max-min rather
+	 * than as a count, so it hands its child one row more than it can draw,
+	 * and it will not scroll to the last of them. Left to itself the body
+	 * spends that row on its one flexible part and everything below shifts
+	 * out of reach -- the key hints could not be scrolled back to. Given
+	 * somewhere else to go, the body keeps the height asked for here and the
+	 * bottom row stays reachable.
+	 */
+	return vbox({
+	           body | size(HEIGHT, EQUAL, std::max(rows, avail)),
+	           filler(),
+	       })
+	    | yframe;
+}
+
 std::string Commas(long long v)
 {
 	std::string d = std::to_string(v < 0 ? -v : v);
@@ -73,6 +132,46 @@ std::string Commas(long long v)
 /* ------------------------------------------------------------------ */
 
 /**
+ * Take away a row's claim on the frame.
+ *
+ * FTXUI widgets mark themselves with `focus` whether or not they hold the
+ * cursor: an Input always does (input.cpp renders the unfocused case with a
+ * plain `focus`), and a Radiobox always marks its selected entry. A frame
+ * scrolls to the mark its vbox kept, and vbox keeps the first one it was
+ * given unless a later one belongs to the focused component -- which none of
+ * these do, since the row is drawn from an element, not from the component.
+ *
+ * So the Name field, being the first row of the attributes pane, held the
+ * pane at the top for good: the cursor could be moved down to Gold or Dungeon
+ * and the view would not follow, which is the whole point of the frame. The
+ * spells pane scrolled only because it has neither widget in it.
+ *
+ * Hiding the mark of every row that is not the cursor leaves MarkRow's own as
+ * the only one, whatever the rows are built from.
+ */
+Element Unfocusable(Element child)
+{
+	class Impl : public Node {
+	public:
+		explicit Impl(Element c)
+		    : Node({ std::move(c) })
+		{
+		}
+		void ComputeRequirement() override
+		{
+			Node::ComputeRequirement();
+			requirement_.focused = Requirement::Focused();
+		}
+		void SetBox(Box box) override
+		{
+			Node::SetBox(box);
+			children_[0]->SetBox(box);
+		}
+	};
+	return std::make_shared<Impl>(std::move(child));
+}
+
+/**
  * Mark the row the cursor is on.
  *
  * A slider recolours itself when focused, but an empty gauge -- any value at
@@ -82,6 +181,8 @@ std::string Commas(long long v)
  */
 Element MarkRow(bool focused, Element row, bool owns_cursor = false)
 {
+	if (!focused)
+		row = Unfocusable(std::move(row));
 	Element marked = hbox({
 	    text(focused ? "\u25b8 " : "  ") | color(Color::Cyan),
 	    row | flex,
@@ -193,8 +294,13 @@ int tui_main(int argc, char **argv)
 			want_render = 1;
 		else if (strcmp(argv[i], "--saves") == 0)
 			want_saves = 1;
+		/* Skip the value of a flag that takes one, or it is taken for the
+		 * path -- `--tab 1 saves/` used to open a directory named "1". */
+		else if (strcmp(argv[i], "--tab") == 0 || strcmp(argv[i], "--focus") == 0
+		    || strcmp(argv[i], "--rows") == 0)
+			i++;
 		else if (strncmp(argv[i], "--", 2) == 0)
-			continue; /* --tab, --focus and the flavour flags */
+			continue; /* the flavour flags */
 		else if (arg == nullptr)
 			arg = argv[i];
 	}
@@ -353,7 +459,7 @@ int tui_main(int argc, char **argv)
 	auto picker_body = Container::Tab({ picker_menu, create_form }, &creating_tab);
 
 	auto picker = Renderer(picker_body, [&] {
-		Element list = vbox({
+		Element list_body = vbox({
 		                   text(" butcher ") | bold,
 		                   text(std::string(" ") + used_dir) | dim,
 		                   separator(),
@@ -365,8 +471,8 @@ int tui_main(int argc, char **argv)
 		                           | color(Color::Cyan)
 		                       : text(""),
 		                   text(" ↑↓ choose · enter open · n new · q quit ") | dim,
-		               })
-		    | border;
+		               });
+		Element list = Windowed(list_body, kPickerMinRows) | border;
 
 		if (!creating)
 			return list;
@@ -578,7 +684,14 @@ int tui_main(int argc, char **argv)
 		    | dim);
 		rows.push_back(StatRow("Dungeon", ed.dlvl, ed.cap_dlvl, slider_dlvl));
 
-		return vbox(rows);
+		/*
+		 * Scrolled, not squeezed. This is the only `flex` child of the sheet,
+		 * so it is the first thing a short window takes room from, and without
+		 * a frame it lost rows from the middle of the list -- Gold and Dungeon
+		 * were simply absent, with nothing to say they existed. MarkRow puts
+		 * `focus` on the cursor row, which is what the frame scrolls to.
+		 */
+		return vbox(rows) | vscroll_indicator | yframe;
 	});
 
 	/* ---- spells pane ---- */
@@ -671,7 +784,9 @@ int tui_main(int argc, char **argv)
 			    | (active || here ? nothing : dim);
 			rows.push_back(MarkRow(here, row));
 		}
-		return vbox(rows) | vscroll_indicator | frame;
+		/* Height only: a horizontal frame would pan the label out of view to
+		 * keep a slider at full length, which is the wrong trade. */
+		return vbox(rows) | vscroll_indicator | yframe;
 	});
 
 	/* ---- inventory pane (read only) ---- */
@@ -681,7 +796,12 @@ int tui_main(int argc, char **argv)
 	 * selected -- so an arrow press there moved focus up to the tab bar and
 	 * left the panes with nothing focused.
 	 */
-	auto inventory_pane = Renderer([&](bool) {
+	/* The last two are measured while rendering: how tall the pane came out,
+	 * and how much of it there was room for. */
+	int inv_scroll = 0;
+	int inv_rows = 0;
+	Box inv_view {};
+	auto inventory_view = Renderer([&](bool) {
 		PkPlayerStruct h = ed.Compose();
 		std::vector<Element> left;
 		left.push_back(text(" Equipped") | bold);
@@ -715,13 +835,57 @@ int tui_main(int argc, char **argv)
 			shown++;
 		}
 
-		return vbox({
-		    hbox({ vbox(left) | flex, separator(), vbox(right) | flex }),
-		    separator(),
-		    text("  items are generated from a seed and cannot be edited; shown "
-		         "for reference")
-		        | dim,
-		});
+		/*
+		 * A column of empty rows, one per line of the pane, carrying `focus`
+		 * at the scroll position. Nothing here is a widget and the two
+		 * columns are different lengths, so the frame has nothing of its own
+		 * to scroll to; this gives it a mark that does not depend on which
+		 * column is longer, and costs no width -- an empty text is zero
+		 * columns wide. It goes first, because an hbox keeps the first mark
+		 * it is handed, and it spans the note at the foot as well, or the
+		 * last rows could not be scrolled to.
+		 */
+		int rows = std::max((int)left.size(), 1 + 4 + 1 + shown) + 2;
+		std::vector<Element> ruler;
+		for (int i = 0; i < rows; i++)
+			ruler.push_back(i == inv_scroll ? text("") | focus : text(""));
+		inv_rows = rows;
+
+		return hbox({
+		           vbox(ruler),
+		           vbox({
+		               hbox({ vbox(left) | flex, separator(), vbox(right) | flex }),
+		               separator(),
+		               text("  items are generated from a seed and cannot be "
+		                    "edited; shown for reference")
+		                   | dim,
+		           })
+		               | flex,
+		       })
+		    | vscroll_indicator | yframe | reflect(inv_view);
+	});
+
+	/*
+	 * Arrows scroll the pane. Each is taken only when it has somewhere to go:
+	 * at the top Up still passes through to the tab bar, as it did when this
+	 * pane handled nothing, and when the whole inventory already fits neither
+	 * key is swallowed -- a cursor with no visible effect reads as a dead key.
+	 */
+	auto inventory_pane = CatchEvent(inventory_view, [&](Event e) {
+		int max_scroll = inv_rows - (inv_view.y_max - inv_view.y_min + 1);
+		if (max_scroll < 0)
+			max_scroll = 0;
+		if (inv_scroll > max_scroll)
+			inv_scroll = max_scroll;
+		if (e == Event::ArrowDown && inv_scroll < max_scroll) {
+			inv_scroll++;
+			return true;
+		}
+		if (e == Event::ArrowUp && inv_scroll > 0) {
+			inv_scroll--;
+			return true;
+		}
+		return false;
 	});
 
 	/* ---- sheet ---- */
@@ -789,8 +953,10 @@ int tui_main(int argc, char **argv)
 		        | dim,
 		});
 
+		Element framed = Windowed(body, kSheetMinRows) | border;
+
 		if (!confirming)
-			return body | border;
+			return framed;
 
 		/* Writing is the one irreversible step; make it deliberate. */
 		Element ask = vbox({
@@ -807,7 +973,7 @@ int tui_main(int argc, char **argv)
 		                      : text(" y confirm   n cancel") | dim,
 		              })
 		    | border | bgcolor(Color::Black);
-		return dbox({ body | border, ask | center });
+		return dbox({ framed, ask | center });
 	});
 
 	/* ---- events ---- */
@@ -1067,6 +1233,17 @@ int tui_main(int argc, char **argv)
 		}
 
 	/*
+	 * --rows N renders short, which is the only way to see what a small
+	 * window does without one: a terminal cannot be resized from a test.
+	 */
+	for (int i = 1; i + 1 < argc; i++)
+		if (strcmp(argv[i], "--rows") == 0) {
+			render_rows = atoi(argv[i + 1]);
+			if (render_rows < 3)
+				render_rows = 3; /* two of those are the border */
+		}
+
+	/*
 	 * --focus N moves the cursor into the active pane before rendering, so a
 	 * single frame can show what the focused row looks like. Without it the
 	 * cursor sits on the tab bar and no row is marked.
@@ -1085,8 +1262,9 @@ int tui_main(int argc, char **argv)
 	if (want_render) {
 		auto doc = (screen_index == 0 ? picker : sheet)->Render();
 		/* flex resolves to its minimum under Fit, which silently drops the
-		 * lower half of the sheet; give the frame a real height instead. */
-		auto out = Screen::Create(Dimension::Fixed(78), Dimension::Fixed(44));
+		 * lower half of the sheet; give the frame a real height instead.
+		 * Windowed() assumes this height when there is no screen to ask. */
+		auto out = Screen::Create(Dimension::Fixed(78), Dimension::Fixed(render_rows));
 		Render(out, doc);
 		out.Print();
 		printf("\n");

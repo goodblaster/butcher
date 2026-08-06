@@ -34,6 +34,12 @@ CXXFLAGS += -MMD -MP
 
 BUILD := build
 
+# `all` is declared further down, after the rules it depends on, so make would
+# otherwise take the first target it meets -- $(BUILD)/tui_editor.o -- as the
+# default and a bare `make` would build one object file and stop, reporting
+# success. Name the goal here instead of relying on rule order.
+.DEFAULT_GOAL := all
+
 
 # ---------------------------------------------------------------------------
 # Files from the devilution submodule.
