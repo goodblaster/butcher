@@ -573,7 +573,13 @@ int tui_main(int argc, char **argv)
 			ed.gold = ed.cap_gold;
 	};
 	auto slider_gold = Slider(gold_opt);
-	auto slider_dlvl = Slider(SliderOption<int> { &ed.dlvl, 0, &ed.cap_dlvl, 1 });
+	/*
+	 * There is no dungeon slider. plrlevel is a record of where the character
+	 * was, not an instruction about where to start: SetupLocalCoords does
+	 * `plr[myplr].plrlevel = currlevel` with currlevel forced to 0, so a new
+	 * game always begins in town, and a game in progress takes its level from
+	 * the saved game instead. It is shown below, and left alone.
+	 */
 
 	auto attrs_controls = Container::Vertical({
 	    name_field,
@@ -589,7 +595,6 @@ int tui_main(int argc, char **argv)
 	    slider_mana,
 	    slider_manamax,
 	    slider_gold,
-	    slider_dlvl,
 	});
 
 	auto attrs_pane = Renderer(attrs_controls, [&] {
@@ -682,7 +687,20 @@ int tui_main(int argc, char **argv)
 		                  + ", " + std::to_string(hero_free_inv_cells(&h))
 		                  + " cells free")
 		    | dim);
-		rows.push_back(StatRow("Dungeon", ed.dlvl, ed.cap_dlvl, slider_dlvl));
+		/*
+		 * Reported, not offered. This was a slider until it turned out the
+		 * game never reads it: setting it to 5 and loading still started the
+		 * character in town. It is still worth showing -- it says whether the
+		 * character is standing in a dungeon -- so it stays as a line.
+		 */
+		rows.push_back(separator());
+		rows.push_back(hbox({
+		    text("  " + Pad("Dungeon", 11)),
+		    text(ed.dlvl == 0 ? "town" : std::to_string(ed.dlvl)),
+		}));
+		rows.push_back(text("   └ where the save says the character is; the game "
+		                    "decides this on load")
+		    | dim);
 
 		/*
 		 * Scrolled, not squeezed. This is the only `flex` child of the sheet,

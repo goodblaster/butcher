@@ -202,10 +202,15 @@ butcher set single_0.hsv --level 30 --gold 25000
 ```
 
 Options: `--name --class --level --exp --statpts --str --mag --dex --vit
---hp --maxhp --mana --maxmana --gold --dlvl`, plus `--spell NAME=LEVEL`
+--hp --maxhp --mana --maxmana --gold`, plus `--spell NAME=LEVEL`
 (repeatable; level 0 forgets it — `NAME` may also be a numeric id, which is
 how you clear one the save should not be carrying). Modifiers: `--dry-run`,
 `--force`, `--raw`, `--no-backup`.
+
+There is no option for the dungeon level. The game does not read that field:
+it starts a new character in town whatever the save says, and a game in
+progress takes its level from the saved game — which is a whole level's worth
+of state, not a number. `show` reports it, and butcher writes it back as found.
 
 ### JSON
 

@@ -382,8 +382,19 @@ static int cmd_set(int argc, char **argv)
 			NEEDINT();
 			h.pMaxManaBase = raw ? n : HERO_FROM_WHOLE(n);
 		} else if (strcmp(o, "--dlvl") == 0) {
-			NEEDINT();
-			h.plrlevel = (BYTE)n;
+			/*
+			 * Withdrawn rather than dropped, so a script that used it hears
+			 * why instead of failing on an unknown option. The game does not
+			 * read plrlevel: SetupLocalCoords overwrites it with currlevel,
+			 * which is forced to 0, so a new game always starts in town, and
+			 * a game in progress takes its level from the saved game.
+			 */
+			fprintf(stderr,
+			    "--dlvl is gone: the game does not read that field. It starts a "
+			    "new character in town whatever it says, and a game in progress "
+			    "takes its level from the saved game, which butcher does not "
+			    "write. \"show\" still reports it.\n");
+			return 2;
 		} else if (strcmp(o, "--gold") == 0) {
 			NEEDINT();
 			want_gold = n;
@@ -1254,7 +1265,7 @@ static int usage(void)
 	    "        --name S      --class N     --level N     --exp N\n"
 	    "        --statpts N   --str N       --mag N       --dex N\n"
 	    "        --vit N       --hp N        --maxhp N     --mana N\n"
-	    "        --maxmana N   --gold N      --dlvl N\n"
+	    "        --maxmana N   --gold N\n"
 	    "        --spell NAME=LEVEL          (repeatable; level 0 forgets it.\n"
 "                                    NAME may also be a numeric id, which\n"
 "                                    is how a foreign id gets cleared)\n"

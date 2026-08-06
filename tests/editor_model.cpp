@@ -107,8 +107,8 @@ static void check_addresses(void)
 	const void *addr[] = {
 		&ed.name, &ed.cls, &ed.str, &ed.mag, &ed.dex, &ed.vit, &ed.statpts,
 		&ed.level_target, &ed.hp, &ed.hp_max, &ed.mana, &ed.mana_max,
-		&ed.gold, &ed.dlvl, &ed.cap_str, &ed.cap_mag, &ed.cap_dex,
-		&ed.cap_vit, &ed.cap_dlvl, &ed.cap_gold,
+		&ed.gold, &ed.cap_str, &ed.cap_mag, &ed.cap_dex,
+		&ed.cap_vit, &ed.cap_gold,
 		&ed.spell_lvl[1], &ed.spell_lvl[46],
 		&ed.spell_known[1], &ed.spell_known[46],
 	};
@@ -125,8 +125,8 @@ static void check_addresses(void)
 	const void *after[] = {
 		&ed.name, &ed.cls, &ed.str, &ed.mag, &ed.dex, &ed.vit, &ed.statpts,
 		&ed.level_target, &ed.hp, &ed.hp_max, &ed.mana, &ed.mana_max,
-		&ed.gold, &ed.dlvl, &ed.cap_str, &ed.cap_mag, &ed.cap_dex,
-		&ed.cap_vit, &ed.cap_dlvl, &ed.cap_gold,
+		&ed.gold, &ed.cap_str, &ed.cap_mag, &ed.cap_dex,
+		&ed.cap_vit, &ed.cap_gold,
 		&ed.spell_lvl[1], &ed.spell_lvl[46],
 		&ed.spell_known[1], &ed.spell_known[46],
 	};
@@ -240,11 +240,18 @@ static void check_caps(void)
 	ok(hero_validate(&clamped, FLAVOR_HELLFIRE, err),
 	    "so the composed character still validates");
 
-	/* Diablo has no Monk, and its dungeon is shorter. */
-	ed.Load(make_entry("/tmp/single_0.sv", h));
-	ok(ed.cap_dlvl == 16, "a Diablo save caps the dungeon at 16");
+	/*
+	 * The dungeon level has no widget -- the game never reads plrlevel, so
+	 * the sheet reports it rather than offering to change it. The level count
+	 * still differs by game, which is what hero_check measures it against.
+	 */
+	ok(hero_num_levels(FLAVOR_DIABLO) - 1 == 16, "Diablo's last dungeon level is 16");
+	ok(hero_num_levels(FLAVOR_HELLFIRE) - 1 == 24, "Hellfire's is 24");
+
 	ed.Load(make_entry("/tmp/single_0.hsv", h));
-	ok(ed.cap_dlvl == 24, "a Hellfire save at 24");
+	int was = ed.dlvl;
+	ed.RefreshCaps();
+	ok(ed.dlvl == was, "and refreshing the caps does not touch it");
 }
 
 /* ------------------------------------------------------------------ */

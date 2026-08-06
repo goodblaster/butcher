@@ -44,7 +44,7 @@ struct Editor {
 
 	/* Bound to the sliders, so switching class moves the ceilings live. */
 	int cap_str = 0, cap_mag = 0, cap_dex = 0, cap_vit = 0;
-	int cap_dlvl = 0, cap_life = 0, cap_mana = 0, cap_gold = 0;
+	int cap_life = 0, cap_mana = 0, cap_gold = 0;
 
 	void RefreshCaps()
 	{
@@ -53,7 +53,6 @@ struct Editor {
 		cap_mag = hero_max_stat(f, cls, ATTRIB_MAG);
 		cap_dex = hero_max_stat(f, cls, ATTRIB_DEX);
 		cap_vit = hero_max_stat(f, cls, ATTRIB_VIT);
-		cap_dlvl = hero_num_levels(f) - 1;
 		cap_gold = gold_cap;
 		/*
 		 * Derived from the game's own formulas, so the bar means something --
@@ -80,8 +79,12 @@ struct Editor {
 			dex = cap_dex;
 		if (vit > cap_vit)
 			vit = cap_vit;
-		if (dlvl > cap_dlvl)
-			dlvl = cap_dlvl;
+		/*
+		 * dlvl is not clamped with them. Nothing edits it any more -- it is
+		 * shown and written back as found -- so trimming it here would be the
+		 * sheet quietly altering a save just for being opened. An impossible
+		 * value is hero_check's to report and ^F's to settle.
+		 */
 	}
 
 	void Load(const SaveEntry &e)
