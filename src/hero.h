@@ -193,6 +193,10 @@ int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f);
  * then lays down enough new stacks in free cells and sets the cached pGold to
  * match. Non-gold items are left untouched.
  *
+ * Gold in the belt counts toward the total, the way CalculateGold counts it,
+ * and stays where it is -- the inventory holds the remainder. Only a belt
+ * holding more than @p total on its own is trimmed.
+ *
  * @return nonzero on success; on failure @p h is unmodified.
  */
 int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err);

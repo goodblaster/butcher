@@ -576,7 +576,15 @@ int hero_gold_capacity(const PkPlayerStruct *h, HeroFlavor f)
 	for (int i = 0; i < n; i++)
 		if (h->InvList[i].idx == IDI_GOLD)
 			cells++;
-	return cells * hero_gold_stack_max(f, h);
+
+	/* Gold already in the belt counts toward the total and hero_set_gold
+	 * leaves it where it is, so it adds to what can be reached. */
+	int belt = 0;
+	for (int i = 0; i < MAXBELTITEMS; i++)
+		if (h->SpdList[i].idx == IDI_GOLD)
+			belt += h->SpdList[i].wValue;
+
+	return cells * hero_gold_stack_max(f, h) + belt;
 }
 
 int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
@@ -597,6 +605,42 @@ int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 		    n, NUM_INV_GRID_ELEM);
 		return 0;
 	}
+
+	/*
+	 * The belt counts too. CalculateGold sums SpdList as well as InvList, so
+	 * gold sitting in a belt slot is part of the character's total -- and
+	 * laying `total` down in the inventory while leaving the belt untouched
+	 * added the belt's share a second time. A character with 20,000 in the
+	 * inventory and 5,000 in the belt came back from a repair with 30,000,
+	 * and gained another 5,000 every time the repair ran.
+	 *
+	 * The belt is left as it is and the inventory makes up the difference:
+	 * moving someone's belt pile is not what "set the gold" asks for. Only
+	 * when the belt alone holds more than the whole new total does it have to
+	 * give, and then it is trimmed from the last slot back.
+	 */
+	int belt = 0;
+	for (int i = 0; i < MAXBELTITEMS; i++)
+		if (work.SpdList[i].idx == IDI_GOLD)
+			belt += work.SpdList[i].wValue;
+
+	for (int i = MAXBELTITEMS - 1; i >= 0 && belt > total; i--) {
+		if (work.SpdList[i].idx != IDI_GOLD)
+			continue;
+		int over = belt - total;
+		int here = work.SpdList[i].wValue;
+		if (over >= here) {
+			memset(&work.SpdList[i], 0, sizeof(work.SpdList[i]));
+			work.SpdList[i].idx = 0xFFFF;
+			belt -= here;
+		} else {
+			work.SpdList[i].wValue = (WORD)(here - over);
+			belt -= over;
+		}
+	}
+
+	/* What the inventory has to hold for the character to total `total`. */
+	const int want = total - belt;
 
 	/* Drop existing gold, compacting InvList. */
 	for (int i = 0; i < NUM_INV_GRID_ELEM; i++)
@@ -630,7 +674,7 @@ int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 	work._pNumInv = (BYTE)kept;
 
 	/* Lay down new stacks. */
-	int stacks = (total + stack_max - 1) / stack_max;
+	int stacks = (want + stack_max - 1) / stack_max;
 	int free_cells = 0;
 	for (int c = 0; c < NUM_INV_GRID_ELEM; c++)
 		if (work.InvGrid[c] == 0)
@@ -639,7 +683,7 @@ int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 	if (stacks > free_cells) {
 		seterr(err, "%d gold needs %d stacks but only %d inventory cells are free "
 		            "(max %d here; a stack holds %d)",
-		    total, stacks, free_cells, free_cells * stack_max, stack_max);
+		    want, stacks, free_cells, free_cells * stack_max + belt, stack_max);
 		return 0;
 	}
 	if (kept + stacks > NUM_INV_GRID_ELEM) {
@@ -656,7 +700,7 @@ int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 	 * (Source/pack.cpp) re-rolls duplicates on load anyway.
 	 */
 	uint32_t seed = 0x1D3A5B79u;
-	int left = total;
+	int left = want;
 	int placed = 0;
 
 	for (int c = NUM_INV_GRID_ELEM - 1; c >= 0 && left > 0; c--) {
@@ -1257,17 +1301,55 @@ int hero_fix(PkPlayerStruct *h, HeroFlavor f, int settle_warnings, DiagList *log
 	 * The count is recomputed rather than clamped. Clamping a wild value to 40
 	 * only trades one error for forty: the game takes InvList[0.._pNumInv-1]
 	 * as live, so the count has to match the items that are actually there.
-	 * Slots above it may hold stale entries -- RemoveInvItem leaves those
-	 * behind -- so the live run is the leading one.
+	 *
+	 * It comes from the grid, not from the leading run of non-empty InvList
+	 * entries. Those are not the same thing, and reading the run was a bug:
+	 * RemoveInvItem decrements the count and shifts the list down without
+	 * clearing the slot it vacated, so an ordinary save carries stale items
+	 * directly above the live ones with no cell naming them -- which is why
+	 * hero_check deliberately does not report them. Counting the run swept
+	 * them in, and the gold re-lay below then compacted them to the front of
+	 * the list, where they had no cell at all. One warning about pile size
+	 * came back as four errors, on a character that had been fine.
+	 *
+	 * The grid is what the game draws the inventory from, so it is the
+	 * authority on how many items there are: the highest slot any cell names.
+	 * Cells naming something past that are cleared just below.
 	 */
 	{
 		int live = 0;
-		while (live < NUM_INV_GRID_ELEM && h->InvList[live].idx != 0xFFFF)
-			live++;
+		for (int c = 0; c < NUM_INV_GRID_ELEM; c++) {
+			int v = h->InvGrid[c];
+			/* Zero is a free cell and negative a continuation cell; only an
+			 * origin says an item is there. */
+			if (v <= 0 || v > NUM_INV_GRID_ELEM)
+				continue;
+			if (v > live)
+				live = v;
+		}
+
+		/*
+		 * Never below a slot holding gold, though. The grid says what the
+		 * game can draw; CalculateGold says what the game counts, and it
+		 * walks InvList[0.._pNumInv-1] without consulting the grid at all.
+		 * Gold in a live slot with no cell is money the character really has,
+		 * so shrinking the count past it would quietly spend it -- and a
+		 * total that changed on its own is a worse thing to hand back than an
+		 * error naming the slot. The missing cell stays an error for
+		 * hero_check to report, because giving that gold a cell here would be
+		 * settling it just as quietly, in the other direction.
+		 */
+		int held = h->_pNumInv;
+		if (held > NUM_INV_GRID_ELEM)
+			held = NUM_INV_GRID_ELEM;
+		for (int i = 0; i < held; i++)
+			if (h->InvList[i].idx == IDI_GOLD && i + 1 > live)
+				live = i + 1;
+
 		if (h->_pNumInv != live) {
 			dl_add(log, DIAG_NOTE, "inventory.count",
-			    "was %u but %d item%s actually present; now %d", h->_pNumInv, live,
-			    live == 1 ? " is" : "s are", live);
+			    "was %u but the grid and the gold below it account for %d; now %d",
+			    h->_pNumInv, live, live);
 			h->_pNumInv = (BYTE)live;
 			changed++;
 		}

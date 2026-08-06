@@ -700,6 +700,100 @@ static void check_fix(void)
 	hero_fix(&h, FLAVOR_HELLFIRE, 0, &log);
 	dl_free(&log);
 	ok(h.pSplLvl2[0] == 4, "a Hellfire save keeps its pSplLvl2 data");
+
+	/*
+	 * Repairing must not invent errors out of the stale tail.
+	 *
+	 * RemoveInvItem decrements the count and shifts InvList down without
+	 * clearing the slot it vacated, so ordinary saves carry items above the
+	 * count with no grid cell naming them; hero_check deliberately says
+	 * nothing about those. The count used to be recomputed as the leading run
+	 * of non-empty entries, which swept them in, and the gold re-lay then
+	 * compacted them to the front of the list where they had no cell at all.
+	 * A character with one warning came back with four errors -- and the
+	 * sheet refuses to save an invalid character, so the repair that was
+	 * meant to be the way out made it unsaveable.
+	 */
+	base_hero(&h, PC_WARRIOR);
+	for (int i = 0; i < 2; i++) {
+		h.InvList[i].idx = IDI_GOLD;
+		h.InvList[i].iSeed = 1000 + i;
+		h.InvList[i].wValue = 10000; /* twice what Diablo holds in one pile */
+		h.InvGrid[i] = (char)(i + 1);
+	}
+	for (int i = 2; i < 6; i++) { /* the stale tail: no cell names these */
+		h.InvList[i].idx = (WORD)(100 + i);
+		h.InvList[i].iSeed = 7000 + i;
+	}
+	h._pNumInv = 2;
+	h.pGold = 20000;
+
+	ok(errors_after_fix(&h, FLAVOR_DIABLO, 1, &n) == 0,
+	    "splitting oversized gold beside a stale item tail leaves no errors");
+	ok(h.pGold == 20000 && hero_gold_in_stacks(&h) == 20000,
+	    "  ...and the total is unchanged");
+
+	/*
+	 * Gold in the belt counts toward the total (CalculateGold sums SpdList),
+	 * so re-laying the total into the inventory while leaving the belt alone
+	 * paid the belt's share twice -- and again on every later repair.
+	 */
+	base_hero(&h, PC_WARRIOR);
+	for (int i = 0; i < 2; i++) {
+		h.InvList[i].idx = IDI_GOLD;
+		h.InvList[i].iSeed = 2000 + i;
+		h.InvList[i].wValue = 10000;
+		h.InvGrid[i] = (char)(i + 1);
+	}
+	h._pNumInv = 2;
+	h.SpdList[0].idx = IDI_GOLD;
+	h.SpdList[0].iSeed = 4242;
+	h.SpdList[0].wValue = 5000;
+	h.pGold = 25000;
+
+	ok(errors_after_fix(&h, FLAVOR_DIABLO, 1, &n) == 0,
+	    "oversized gold beside a belt pile repairs cleanly");
+	ok(hero_gold_in_stacks(&h) == 25000 && h.pGold == 25000,
+	    "  ...without paying the belt's share twice");
+	ok(h.SpdList[0].idx == IDI_GOLD && h.SpdList[0].wValue == 5000,
+	    "  ...and the belt pile is left where it was");
+
+	dl_init(&log);
+	again = hero_fix(&h, FLAVOR_DIABLO, 1, &log);
+	dl_free(&log);
+	ok(again == 0 && hero_gold_in_stacks(&h) == 25000,
+	    "  ...and repeating the repair does not grow it");
+
+	/*
+	 * Gold below the count with no cell naming it. The game counts it --
+	 * CalculateGold never looks at the grid -- so the count must not shrink
+	 * past it, or the repair would spend the character's money for them. The
+	 * missing cell stays an error, which is the point: it says which slot is
+	 * wrong instead of quietly changing the total.
+	 */
+	base_hero(&h, PC_WARRIOR);
+	h.InvList[0].idx = IDI_GOLD;
+	h.InvList[0].iSeed = 3001;
+	h.InvList[0].wValue = 5000;
+	h.InvGrid[0] = 1;
+	h.InvList[1].idx = IDI_GOLD; /* live, but no cell names it */
+	h.InvList[1].iSeed = 3002;
+	h.InvList[1].wValue = 5000;
+	h._pNumInv = 2;
+	h.pGold = 10000;
+
+	dl_init(&log);
+	hero_fix(&h, FLAVOR_DIABLO, 1, &log);
+	dl_free(&log);
+	ok(h._pNumInv == 2, "the count does not shrink past gold the game counts");
+	ok(hero_gold_in_stacks(&h) == 10000 && h.pGold == 10000,
+	    "  ...so the total survives the repair");
+
+	dl_init(&dl);
+	hero_check(&h, FLAVOR_DIABLO, &dl);
+	ok(dl_count(&dl, DIAG_ERROR) == 1,
+	    "  ...and the slot with no cell is still reported");
+	dl_free(&dl);
 }
 
 /* ------------------------------------------------------------------ */
