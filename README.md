@@ -46,7 +46,31 @@ make uninstall
 ```
 
 Needs a C++17 compiler and nothing else — no external libraries, no CMake, no
-package manager. `make check` builds the tool and runs 683 tests.
+package manager. `make check` builds the tool and runs every suite.
+
+macOS, Linux and Windows are each built and tested by CI on every push.
+
+### Windows
+
+Build with MinGW-w64 from an [MSYS2](https://www.msys2.org/) **UCRT64** shell:
+
+```bash
+pacman -S make mingw-w64-ucrt-x86_64-gcc
+git config --global core.autocrlf false   # before cloning: see below
+git clone --recurse-submodules https://github.com/goodblaster/butcher.git
+cd butcher
+make check
+```
+
+That produces a self-contained `build/butcher.exe`, statically linked, which
+runs from `cmd`, PowerShell or Windows Terminal. It finds DevilutionX saves in
+`%APPDATA%\diasurgical\devilution`. Paths may be non-ASCII on Windows 10
+1903 and later, where the executable's manifest makes UTF-8 the process code
+page.
+
+Line endings matter: a CRLF checkout breaks the Makefile's reading of FTXUI's
+source list. The Windows build is exercised only by CI so far — reports from
+real Windows machines are welcome.
 
 This produces one binary, `build/butcher`, carrying two interfaces.
 
@@ -463,9 +487,27 @@ but keeps them out of the book.
   oldest copy — the one furthest from whatever you just broke.
 - File permissions are preserved.
 - Multiplayer-keyed heroes are refused rather than silently re-encoded.
+- A save with a game in progress has its two copies of the character
+  written in **one** rewrite of the archive, so a failure cannot leave them
+  disagreeing.
 
 To restore: `cp single_0.sv.bak single_0.sv`. Every write names the backup it
 made, so check that line if you want a more recent one.
+
+## Development
+
+```bash
+make check                      # every suite
+make asan                       # the same under AddressSanitizer + UBSan
+make asan SANITIZERS=undefined  # UBSan alone, e.g. on macOS 26 (see Makefile)
+make fuzz-smoke                 # the fuzz harnesses, mutating a built-in seed
+make fuzz FUZZ_CXX=clang++      # coverage-guided, with LLVM's libFuzzer
+```
+
+Every input butcher reads was made by someone else, so the parsers — the MPQ
+reader, the saved-game patcher, JSON import — have fuzz harnesses in `fuzz/`.
+CI runs each under libFuzzer for a minute on every push, alongside the suites
+under ASan and UBSan.
 
 ## Diablo and Hellfire
 
@@ -483,11 +525,13 @@ data inside an archive.
 | Path | |
 | --- | --- |
 | `src/` | The shared library — format, validation, editing, discovery |
-| `src/compat/` | Win32 types, msvcrt `rand`, Hellfire constants |
+| `src/compat/` | Win32 types, msvcrt `rand`, Hellfire constants, and the platform layer |
 | `cli/` | The command-line front end |
 | `tui/` | The terminal front end (FTXUI) |
 | `src/butcher.cpp` | Chooses between them |
-| `tests/` | Nine suites, 683 checks |
+| `tests/` | Nine suites; `make check` prints the total |
+| `fuzz/` | Fuzz harnesses for the archive reader, saved-game patcher and JSON |
+| `.github/workflows/` | CI: Linux, macOS, Windows, sanitizers, fuzzing |
 | `third_party/devilution` | Submodule; see below |
 | `third_party/ftxui` | Submodule; the terminal UI library |
 | `docs/DESIGN.md` | Why it is built the way it is |

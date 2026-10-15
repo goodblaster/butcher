@@ -9,7 +9,9 @@ A save archive stores the character **twice**:
 
 `game` is present only while a game is in progress. Editing `hero` alone shows
 on the selection screen and is then overwritten from `game` the moment play
-starts — visible, but not effective. `src/gamefile.cpp` keeps the two in step.
+starts — visible, but not effective. `src/gamefile.cpp` keeps the two in step,
+and `save_write_character` writes them in a single rewrite of the archive, so
+they can never be left disagreeing by a failure halfway.
 
 ## Format
 

@@ -2,13 +2,17 @@
 #
 #   make            build butcher and the test binaries
 #   make check      build and run every test
+#   make asan       the same under AddressSanitizer and UBSan
+#   make fuzz-smoke the fuzz harnesses, briefly, on any compiler
+#   make fuzz       the fuzz harnesses under libFuzzer (LLVM clang)
 #   make install    copy butcher into PREFIX/bin (default /usr/local)
 #   make uninstall
 #   make clean
 #
-# Host-native; needs only a C++17 compiler. No Wine, no Storm.dll, no game
-# assets, no CMake. Requires both submodules -- devilution for the save
-# format, FTXUI for the terminal interface:
+# Host-native on macOS, Linux and Windows (MinGW-w64; see README.md); needs
+# only a C++17 compiler. No Wine, no Storm.dll, no game assets, no CMake.
+# Requires both submodules -- devilution for the save format, FTXUI for the
+# terminal interface:
 #
 #   git submodule update --init
 #
@@ -260,13 +264,20 @@ $(BUILD)/test_%$(EXE): $(BUILD)/test_%.o $(LIB_OBJ) $(GAME_OBJ)
 # --- tests ------------------------------------------------------------------
 # Each test gets its own scratch directory so a stray file from one cannot
 # affect another.
+#
+# Ends with a total, so the README need not carry a count that goes stale.
 check: all
-	@set -e; for t in $(TESTS); do \
+	@set -e; total=0; for t in $(TESTS); do \
 		rm -rf $(BUILD)/scratch_$$t && mkdir -p $(BUILD)/scratch_$$t; \
 		BUTCHER_TMPDIR=$(BUILD)/scratch_$$t \
 		BUTCHER_EXE=./$(BUTCHER) \
-		./$(BUILD)/test_$$t; \
-	done
+		./$(BUILD)/test_$$t > $(BUILD)/test_$$t.log 2>&1 \
+			|| { cat $(BUILD)/test_$$t.log; exit 1; }; \
+		cat $(BUILD)/test_$$t.log; \
+		n=$$(sed -n 's/^\([0-9]*\) passed, 0 failed.*$$/\1/p' $(BUILD)/test_$$t.log); \
+		total=$$((total + $${n:-0})); \
+	done; \
+	printf '\n%d suites, %d checks, all passing\n' $(words $(TESTS)) $$total
 
 # --- sanitizers and fuzzing --------------------------------------------------
 # Every input butcher reads is a file someone else made, and the bounds checks
