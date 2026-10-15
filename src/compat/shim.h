@@ -130,8 +130,16 @@ static inline int dvl_msvc_rand(void)
 	return (int)((dvl_msvc_rand_seed >> 16) & 0x7fff);
 }
 
+/*
+ * Only for the game's own sources, which the Makefile compiles with
+ * BUTCHER_GAME_TU. Everywhere else the macro would rename rand inside the
+ * standard library's headers too -- libstdc++'s <algorithm> names std::rand
+ * -- and nothing but codec.cpp's key derivation needs it.
+ */
+#ifdef BUTCHER_GAME_TU
 #define rand dvl_msvc_rand
 #define srand dvl_msvc_srand
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Fatal handler                                                       */

@@ -118,30 +118,30 @@ static void check_msvc_rand(void)
 
 	section("1. msvcrt PRNG");
 
-	srand(1);
+	dvl_msvc_srand(1);
 	for (int i = 0; i < 10; i++) {
-		int got = rand();
+		int got = dvl_msvc_rand();
 		if (got != expect[i]) {
 			printf("        index %d: expected %d, got %d\n", i, expect[i], got);
 			match = 0;
 		}
 	}
-	ok(match, "srand(1) reproduces the published msvcrt sequence");
+	ok(match, "dvl_msvc_srand(1) reproduces the published msvcrt sequence");
 
 	/* Every value must be in [0, RAND_MAX] with RAND_MAX == 0x7fff. */
 	int in_range = 1;
-	srand(0x7058);
+	dvl_msvc_srand(0x7058);
 	for (int i = 0; i < 4096; i++) {
-		int v = rand();
+		int v = dvl_msvc_rand();
 		if (v < 0 || v > 0x7fff)
 			in_range = 0;
 	}
 	ok(in_range, "output stays within msvcrt's 15-bit RAND_MAX");
 
 	/* codec_init_key depends on this exact seed; pin its first outputs. */
-	srand(0x7058);
-	int a = rand(), b = rand(), c = rand();
-	printf("        srand(0x7058) -> %d, %d, %d\n", a, b, c);
+	dvl_msvc_srand(0x7058);
+	int a = dvl_msvc_rand(), b = dvl_msvc_rand(), c = dvl_msvc_rand();
+	printf("        dvl_msvc_srand(0x7058) -> %d, %d, %d\n", a, b, c);
 	ok(a == 28420 && b == 31343 && c == 25337,
 	    "srand(0x7058) prefix is stable");
 }

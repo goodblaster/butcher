@@ -58,8 +58,8 @@ BUILD := build
 # The warning suppressions mirror what the game's own types.h does with
 # #pragma warning; these are vanilla warnings in code we cannot change.
 # ---------------------------------------------------------------------------
-GAME_FLAGS := -include $(SHIM) -Wno-sign-compare -Wno-char-subscripts \
-	-Wno-unused-const-variable
+GAME_FLAGS := -include $(SHIM) -DBUTCHER_GAME_TU -Wno-sign-compare \
+	-Wno-char-subscripts -Wno-unused-const-variable
 
 # PKWare is Ladislav Zezula's; its warnings are equally off-limits.
 PKWARE_FLAGS := -Wno-sign-compare -Wno-unused-variable -Wno-int-in-bool-context
