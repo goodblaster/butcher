@@ -1,0 +1,51 @@
+# Build and test on every push and pull request.
+#
+# The suites build their own archives, so no game data is needed here -- the
+# real-save check (BUTCHER_SAVE=... make check) stays a local step, since a
+# save is someone's character and does not belong in a public runner.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: make check
+        run: make -j"$(nproc)" check
+      - name: make asan (address + undefined)
+        run: make -j"$(nproc)" asan
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: make check
+        run: make -j"$(sysctl -n hw.ncpu)" check
+      # Apple's ASan runtime is unreliable on recent macOS (see the Makefile),
+      # and Linux covers it; UBSan is what differs by platform here.
+      - name: make asan (undefined)
+        run: make -j"$(sysctl -n hw.ncpu)" asan SANITIZERS=undefined
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: make fuzz (libFuzzer, 60 s per harness)
+        run: make -j"$(nproc)" fuzz FUZZ_CXX=clang++ FUZZ_SECONDS=60
+      - name: keep any crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: build-fuzz/crash_*
+          if-no-files-found: ignore
