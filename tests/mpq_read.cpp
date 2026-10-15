@@ -14,6 +14,7 @@
  * retail game. Point BUTCHER_SAVE at a real single_N.sv to check that.
  */
 #include "../src/hero.h"
+#include "portable.h"
 #include "../src/savefile.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
@@ -418,7 +419,7 @@ static void check_rejections(void)
 	Entry e = { "hero", g_blob, 1288 };
 	const char *path = tmppath("truncated.sv");
 	build_archive(path, &e, 1);
-	truncate(path, 5000);
+	test_truncate(path, 5000);
 	expect_refusal(path, "truncated archive refused");
 
 	/* Not an MPQ at all. */
@@ -580,7 +581,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 2 MPQ reader\n");

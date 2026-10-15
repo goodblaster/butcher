@@ -11,6 +11,7 @@
  * destroy an existing backup.
  */
 #include "../src/saveutil.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -406,7 +407,7 @@ static void check_game_in_progress(void)
 			fseek(f, 0, SEEK_END);
 			long sz = ftell(f);
 			fclose(f);
-			truncate(broken, sz - 64);
+			test_truncate(broken, sz - 64);
 		}
 		err[0] = '\0';
 		PkPlayerStruct edit2 = back;
@@ -613,7 +614,7 @@ static void check_discovery(void)
 
 	char dir[SAVE_PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/saves", g_tmpdir);
-	mkdir(dir, 0755);
+	test_mkdir(dir);
 
 	PkPlayerStruct a, b, c;
 	base_hero(&a, "Aidan", PC_WARRIOR);
@@ -659,7 +660,7 @@ static void check_discovery(void)
 
 	char empty[SAVE_PATH_MAX];
 	snprintf(empty, sizeof(empty), "%s/nothing-here", g_tmpdir);
-	mkdir(empty, 0755);
+	test_mkdir(empty);
 	ok(save_scan_dir(empty, found, SAVE_MAX_SLOTS) == 0, "an empty directory finds none");
 	ok(save_scan_dir("/no/such/place", found, SAVE_MAX_SLOTS) == 0,
 	    "a missing directory finds none rather than failing");
@@ -817,7 +818,7 @@ static void check_collisions(void)
 
 	char dir[SAVE_PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/coll", g_tmpdir);
-	mkdir(dir, 0755);
+	test_mkdir(dir);
 
 	PkPlayerStruct a, b;
 	base_hero(&a, "Aidan", PC_WARRIOR);
@@ -910,7 +911,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("butcher -- shared save utilities\n");

@@ -5,14 +5,13 @@
  * that rebuild the archive into a verified temporary file. See savefile.h.
  */
 #include "savefile.h"
+#include "compat/platform.h"
 #include "errbuf.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 #include "../third_party/devilution/3rdParty/PKWare/pkware.h"
 
 #include <errno.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /* The tables are consumed as raw little-endian images, exactly as the game
  * writes them. These three structs live outside any #pragma pack region and
@@ -669,27 +668,12 @@ int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
 			seterr(err, "out of memory");
 			goto out;
 		}
-		snprintf(tmppath, n, "%s.tmpXXXXXX", path);
-		int fd = mkstemp(tmppath);
-		if (fd < 0) {
+		out = plat_temp_beside(path, tmppath, n);
+		if (out == NULL) {
 			seterr(err, "cannot create temporary file beside %s: %s", path,
 			    strerror(errno));
 			free(tmppath);
 			tmppath = NULL;
-			goto out;
-		}
-		/*
-		 * mkstemp creates at 0600 and rename() carries that mode onto the
-		 * target, so without this the save silently loses its permissions.
-		 */
-		struct stat st;
-		if (stat(path, &st) == 0)
-			(void)fchmod(fd, st.st_mode & 07777);
-
-		out = fdopen(fd, "wb");
-		if (out == NULL) {
-			seterr(err, "cannot open temporary file: %s", strerror(errno));
-			close(fd);
 			goto out;
 		}
 	}
@@ -760,7 +744,14 @@ int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
 		}
 	}
 
-	if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+	/*
+	 * Done with the original. Closed before the rename because Windows will
+	 * not replace a file this process still has open.
+	 */
+	mpq_close(a);
+	a = NULL;
+
+	if (plat_sync(out) != 0) {
 		seterr(err, "cannot flush temporary file: %s", strerror(errno));
 		goto out;
 	}
@@ -809,7 +800,7 @@ int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
 		mpq_close(v);
 	}
 
-	if (rename(tmppath, path) != 0) {
+	if (plat_replace(tmppath, path) != 0) {
 		seterr(err, "cannot replace %s: %s", path, strerror(errno));
 		goto out;
 	}
@@ -887,7 +878,7 @@ int save_write_character(const char *path, const PkPlayerStruct *hero,
 int save_create(const char *path, const PkPlayerStruct *h, char *err)
 {
 	/* "x" so an existing character is never silently replaced. */
-	FILE *f = fopen(path, "wbx");
+	FILE *f = plat_fopen_new(path);
 	if (f == NULL) {
 		seterr(err, "cannot create %s: %s", path, strerror(errno));
 		return 0;

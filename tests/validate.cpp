@@ -16,11 +16,11 @@
  *     that cries wolf on ordinary characters is worse than none.
  */
 #include "../src/charjson.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
 #include <stdarg.h>
-#include <sys/wait.h>
 
 /* ------------------------------------------------------------------ */
 /* Harness                                                             */
@@ -838,13 +838,7 @@ static int run_validate(const char *args, char *out, size_t n)
 {
 	char cmd[1024];
 	snprintf(cmd, sizeof(cmd), "%s validate %s 2>&1", g_exe, args);
-	FILE *p = popen(cmd, "r");
-	if (p == NULL)
-		return -1;
-	size_t got = fread(out, 1, n - 1, p);
-	out[got] = '\0';
-	int rc = pclose(p);
-	return WEXITSTATUS(rc);
+	return test_run(cmd, out, n);
 }
 
 static void check_input_kinds(void)

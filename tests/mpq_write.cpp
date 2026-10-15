@@ -14,6 +14,7 @@
  *   5. The result reads back as intended.
  */
 #include "../src/savefile.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -257,9 +258,15 @@ static void check_idempotent(void)
 	 * user's save.
 	 */
 	{
+#ifdef _WIN32
+		/* No permission bits to lose: Windows reports 0666 for any
+		 * writable file, and the replacement is created writable. */
+		printf("  SKIP  file permissions (Windows has no mode bits)\n");
+#else
 		struct stat st;
 		ok(stat(path, &st) == 0 && (st.st_mode & 07777) == 0644,
 		    "file permissions preserved (0644, not mkstemp's 0600)");
+#endif
 	}
 
 	/* And again, to be sure it is stable under repetition. */
@@ -832,7 +839,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 3 MPQ writer\n");

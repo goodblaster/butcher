@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Embedded in butcher.exe (see butcher.rc). activeCodePage makes UTF-8 the
+  process's ANSI code page on Windows 10 1903 and later, so fopen, stat,
+  opendir and the *A Win32 calls all take the UTF-8 paths the rest of the code
+  uses. On older Windows it is ignored and non-ASCII paths will not open.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="butcher" version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

@@ -3,11 +3,11 @@
  *
  * Character editor CLI: list, show, set, dump, patch.
  */
+#include "../src/compat/platform.h"
 #include "../src/charjson.h"
 #include "../src/format.h"
 #include "../src/saveutil.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <strings.h> /* strcasecmp */
@@ -1335,7 +1335,7 @@ int cli_main(int argc, char **argv)
 	 * block-buffered whenever output is piped or captured, and the warnings
 	 * surface before the diff they refer to.
 	 */
-	setvbuf(stdout, NULL, _IOLBF, 0);
+	plat_stdout_line_buffered();
 
 	if (argc < 2)
 		return usage();

@@ -4,12 +4,12 @@
  * Save discovery and safe writing. See saveutil.h.
  */
 #include "saveutil.h"
+#include "compat/platform.h"
 #include "errbuf.h"
 
 #include <dirent.h>
 #include <errno.h>
 #include <strings.h>
-#include <sys/stat.h>
 
 #define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
@@ -24,29 +24,46 @@ HeroFlavor save_flavor_of(const char *path)
 
 int save_default_dirs(char out[][SAVE_PATH_MAX], int max)
 {
-	const char *home = getenv("HOME");
 	int n = 0;
-
-	if (home == NULL)
-		return 0;
 
 	/*
 	 * DevilutionX keeps saves under the platform's application-data
 	 * directory. The retail game keeps them beside Diablo.exe, which we
 	 * cannot guess, so a directory argument stays supported everywhere.
 	 */
-	static const char *relative[] = {
-		"/Library/Application Support/diasurgical/devilution", /* macOS */
-		"/.local/share/diasurgical/devilution",                /* Linux */
-		"/AppData/Roaming/diasurgical/devilution",             /* Windows-ish */
-		"/.wine/drive_c/Program Files/Diablo",
+#ifdef _WIN32
+	/* %APPDATA% is the Roaming folder, where DevilutionX writes on Windows. */
+	static const struct {
+		const char *env;
+		const char *rel;
+	} candidates[] = {
+		{ "APPDATA", "\\diasurgical\\devilution" },
+		{ "USERPROFILE", "\\AppData\\Roaming\\diasurgical\\devilution" },
 	};
+#else
+	static const struct {
+		const char *env;
+		const char *rel;
+	} candidates[] = {
+		{ "HOME", "/Library/Application Support/diasurgical/devilution" }, /* macOS */
+		{ "HOME", "/.local/share/diasurgical/devilution" },                /* Linux */
+		{ "HOME", "/.wine/drive_c/Program Files/Diablo" },
+	};
+#endif
 
-	for (size_t i = 0; i < sizeof(relative) / sizeof(relative[0]) && n < max; i++) {
-		struct stat st;
+	for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]) && n < max; i++) {
+		const char *base = getenv(candidates[i].env);
+		if (base == NULL || base[0] == '\0')
+			continue;
 		char path[SAVE_PATH_MAX];
-		snprintf(path, sizeof(path), "%s%s", home, relative[i]);
-		if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+		snprintf(path, sizeof(path), "%s%s", base, candidates[i].rel);
+		if (!plat_is_dir(path))
+			continue;
+		/* The two Windows candidates usually name the same folder. */
+		int dup = 0;
+		for (int j = 0; j < n; j++)
+			dup |= strcmp(out[j], path) == 0;
+		if (!dup)
 			snprintf(out[n++], SAVE_PATH_MAX, "%s", path);
 	}
 	return n;
@@ -129,7 +146,7 @@ int save_backup_to(const char *path, char *chosen, size_t chosen_len, char *err)
 			snprintf(bak, sizeof(bak), "%s.bak", path);
 		else
 			snprintf(bak, sizeof(bak), "%s.bak.%d", path, i);
-		out = fopen(bak, "wbx");
+		out = plat_fopen_new(bak);
 		if (out != NULL)
 			break;
 		if (errno != EEXIST) {
@@ -272,7 +289,7 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 
 static void dirname_of(const char *path, char *out, size_t n)
 {
-	const char *slash = strrchr(path, '/');
+	const char *slash = plat_last_sep(path);
 	if (slash == NULL) {
 		snprintf(out, n, ".");
 		return;
@@ -288,8 +305,8 @@ static void dirname_of(const char *path, char *out, size_t n)
 
 static int same_leaf(const char *a, const char *b)
 {
-	const char *ab = strrchr(a, '/');
-	const char *bb = strrchr(b, '/');
+	const char *ab = plat_last_sep(a);
+	const char *bb = plat_last_sep(b);
 	return strcmp(ab ? ab + 1 : a, bb ? bb + 1 : b) == 0;
 }
 

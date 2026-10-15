@@ -14,6 +14,7 @@
  * merely the ones a hand-written fixture happened to set.
  */
 #include "../src/charjson.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -574,7 +575,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 5 JSON format\n");

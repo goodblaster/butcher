@@ -32,6 +32,8 @@
 
 #include <sys/stat.h>
 
+#include "../src/compat/platform.h"
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -52,7 +54,11 @@ std::string Pad(const std::string &s, size_t n)
 /** The last path component -- status lines have no room for a full path. */
 std::string Leaf(const std::string &path)
 {
+#ifdef _WIN32
+	size_t slash = path.find_last_of("/\\");
+#else
 	size_t slash = path.find_last_of('/');
+#endif
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
@@ -309,8 +315,7 @@ int tui_main(int argc, char **argv)
 	int named_one = 0;
 
 	if (arg != nullptr) {
-		struct stat st;
-		if (stat(arg, &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (plat_is_dir(arg)) {
 			nsaves = save_scan_dir(arg, saves.data(), SAVE_MAX_SLOTS);
 			snprintf(used_dir, sizeof(used_dir), "%s", arg);
 		} else {

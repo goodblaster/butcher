@@ -32,12 +32,30 @@ CXXFLAGS += -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-in
 # objects behind and the failure surfaced as a confusing link error.
 CXXFLAGS += -MMD -MP
 
-# Extra instrumentation, set by the asan and fuzz targets below. Kept separate
-# from CXXFLAGS so it survives a CXXFLAGS given on the command line.
+# Extra instrumentation, set by the asan and fuzz targets below, which pass it
+# down to a sub-make without having to restate the rest of CXXFLAGS.
 SANITIZE ?=
 CXXFLAGS += $(SANITIZE)
 
 BUILD := build
+
+# --- Windows (MinGW-w64, e.g. MSYS2's UCRT64 shell) --------------------------
+# The same Makefile, with three differences: executables end in .exe; they are
+# linked statically, so butcher.exe runs without MinGW's DLLs beside it; and
+# butcher.exe carries a manifest that makes UTF-8 the process code page, which
+# is what lets every narrow-path call in src/ take a UTF-8 name as it is.
+ifeq ($(OS),Windows_NT)
+EXE := .exe
+LDFLAGS += -static
+WINDRES ?= windres
+WIN_RES := $(BUILD)/butcher_res.o
+# What FTXUI's own CMake sets on Windows.
+FTXUI_DEFS := -DUNICODE -D_UNICODE
+else
+EXE :=
+WIN_RES :=
+FTXUI_DEFS :=
+endif
 
 # `all` is declared further down, after the rules it depends on, so make would
 # otherwise take the first target it meets -- $(BUILD)/tui_editor.o -- as the
@@ -92,6 +110,7 @@ GAME_OBJ := \
 # The shared library. Both front ends link this; neither invokes the other.
 LIB_OBJ := \
 	$(BUILD)/shim.o \
+	$(BUILD)/platform.o \
 	$(BUILD)/savefile.o \
 	$(BUILD)/gamefile.o \
 	$(BUILD)/saveutil.o \
@@ -132,7 +151,7 @@ endif
 
 $(BUILD)/ftxui/%.o: $(FTXUI)/src/%.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(FTXUI_INC) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(FTXUI_DEFS) $(FTXUI_INC) -c -o $@ $<
 
 $(BUILD)/tui_editor.o: tui/editor.cpp tui/editor.h $(SHIM) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -144,9 +163,10 @@ $(BUILD)/tui_main.o: tui/main.cpp tui/editor.h tui/nav.h $(SHIM) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(FTXUI_INC) -c -o $@ $<
 
 TESTS := crypto mpq_read mpq_write editor json validate saveutil editor_model nav
-TEST_BINS := $(addprefix $(BUILD)/test_,$(TESTS))
+TEST_BINS := $(addsuffix $(EXE),$(addprefix $(BUILD)/test_,$(TESTS)))
+BUTCHER := $(BUILD)/butcher$(EXE)
 
-all: $(BUILD)/butcher $(TEST_BINS)
+all: $(BUTCHER) $(TEST_BINS)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -192,6 +212,13 @@ $(BUILD)/hellfire.o: src/compat/hellfire.cpp $(SHIM) | $(BUILD)
 $(BUILD)/shim.o: src/compat/shim.cpp $(SHIM) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+# No shim: on Windows this includes <windows.h>, whose types collide with it.
+$(BUILD)/platform.o: src/compat/platform.cpp src/compat/platform.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/butcher_res.o: src/compat/butcher.rc src/compat/butcher.manifest | $(BUILD)
+	$(WINDRES) --include-dir src/compat -O coff -o $@ $<
+
 $(BUILD)/%.o: src/%.cpp $(SHIM) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -202,13 +229,13 @@ $(BUILD)/test_%.o: tests/%.cpp $(SHIM) | $(BUILD)
 $(BUILD)/test_nav.o: tests/nav.cpp tui/nav.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(FTXUI_INC) -c -o $@ $<
 
-$(BUILD)/test_nav: $(BUILD)/test_nav.o $(BUILD)/tui_nav.o $(FTXUI_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(BUILD)/test_nav$(EXE): $(BUILD)/test_nav.o $(BUILD)/tui_nav.o $(FTXUI_OBJ)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 # The editor-model test links the TUI's model, but not FTXUI.
-$(BUILD)/test_editor_model: $(BUILD)/test_editor_model.o $(BUILD)/tui_editor.o \
+$(BUILD)/test_editor_model$(EXE): $(BUILD)/test_editor_model.o $(BUILD)/tui_editor.o \
 		$(LIB_OBJ) $(GAME_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 # --- links ------------------------------------------------------------------
 $(BUILD)/main.o: cli/main.cpp $(SHIM) | $(BUILD)
@@ -218,16 +245,17 @@ $(BUILD)/main.o: cli/main.cpp $(SHIM) | $(BUILD)
 $(BUILD)/butcher.o: src/butcher.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD)/butcher: $(BUILD)/butcher.o $(BUILD)/main.o $(BUILD)/tui_main.o \
-		$(BUILD)/tui_editor.o $(BUILD)/tui_nav.o $(LIB_OBJ) $(GAME_OBJ) $(FTXUI_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(BUTCHER): $(BUILD)/butcher.o $(BUILD)/main.o $(BUILD)/tui_main.o \
+		$(BUILD)/tui_editor.o $(BUILD)/tui_nav.o $(LIB_OBJ) $(GAME_OBJ) $(FTXUI_OBJ) \
+		$(WIN_RES)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 # The validate tests drive the built binary, so they depend on it.
-$(BUILD)/test_validate: $(BUILD)/test_validate.o $(LIB_OBJ) $(GAME_OBJ) $(BUILD)/butcher
-	$(CXX) $(CXXFLAGS) -o $@ $(filter %.o,$^)
+$(BUILD)/test_validate$(EXE): $(BUILD)/test_validate.o $(LIB_OBJ) $(GAME_OBJ) $(BUTCHER)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(filter %.o,$^)
 
-$(BUILD)/test_%: $(BUILD)/test_%.o $(LIB_OBJ) $(GAME_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(BUILD)/test_%$(EXE): $(BUILD)/test_%.o $(LIB_OBJ) $(GAME_OBJ)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 # --- tests ------------------------------------------------------------------
 # Each test gets its own scratch directory so a stray file from one cannot
@@ -236,7 +264,7 @@ check: all
 	@set -e; for t in $(TESTS); do \
 		rm -rf $(BUILD)/scratch_$$t && mkdir -p $(BUILD)/scratch_$$t; \
 		BUTCHER_TMPDIR=$(BUILD)/scratch_$$t \
-		BUTCHER_EXE=./$(BUILD)/butcher \
+		BUTCHER_EXE=./$(BUTCHER) \
 		./$(BUILD)/test_$$t; \
 	done
 
@@ -308,14 +336,14 @@ fuzz: fuzz-smoke
 			-artifact_prefix=build-fuzz/crash_$${f}_ build-fuzz/corpus_$$f; \
 	done
 
-install: $(BUILD)/butcher
+install: $(BUTCHER)
 	@mkdir -p "$(DESTDIR)$(BINDIR)"
-	install -m 755 $(BUILD)/butcher "$(DESTDIR)$(BINDIR)/butcher"
-	@echo "installed $(DESTDIR)$(BINDIR)/butcher"
+	install -m 755 $(BUTCHER) "$(DESTDIR)$(BINDIR)/butcher$(EXE)"
+	@echo "installed $(DESTDIR)$(BINDIR)/butcher$(EXE)"
 
 uninstall:
-	@rm -f "$(DESTDIR)$(BINDIR)/butcher"
-	@echo "removed $(DESTDIR)$(BINDIR)/butcher"
+	@rm -f "$(DESTDIR)$(BINDIR)/butcher$(EXE)"
+	@echo "removed $(DESTDIR)$(BINDIR)/butcher$(EXE)"
 
 clean:
 	@rm -rf $(BUILD) build-san-* build-fuzz
