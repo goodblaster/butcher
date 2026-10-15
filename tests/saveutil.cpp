@@ -186,11 +186,6 @@ static void make_game_blob_ex(BYTE *out, const PkPlayerStruct *h, int stale_tail
 	memcpy(out + grid_at, h->InvGrid, NUM_INV_GRID_ELEM);
 }
 
-/** @param stale_tail leave junk after the name, as a renamed character has. */
-static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
-{
-	make_game_blob_ex(out, h, stale_tail, GAME_FIXTURE_LEVELS);
-}
 
 /**
  * Write a one-file save archive containing this character.

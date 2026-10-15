@@ -4,22 +4,14 @@
  * Save discovery and safe writing. See saveutil.h.
  */
 #include "saveutil.h"
+#include "errbuf.h"
 
 #include <dirent.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <strings.h>
 #include <sys/stat.h>
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, MPQ_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
 HeroFlavor save_flavor_of(const char *path)
 {

@@ -81,7 +81,8 @@ LIB_OBJ := \
 	$(BUILD)/format.o \
 	$(BUILD)/json.o \
 	$(BUILD)/charjson.o \
-	$(BUILD)/diag.o
+	$(BUILD)/diag.o \
+	$(BUILD)/errbuf.o
 
 # --- FTXUI ------------------------------------------------------------------
 # Vendored as a submodule and compiled with this Makefile rather than its own

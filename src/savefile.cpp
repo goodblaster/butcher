@@ -5,12 +5,12 @@
  * that rebuild the archive into a verified temporary file. See savefile.h.
  */
 #include "savefile.h"
+#include "errbuf.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 #include "../third_party/devilution/3rdParty/PKWare/pkware.h"
 
 #include <errno.h>
-#include <stdarg.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,15 +28,7 @@ struct MpqArchive {
 	_BLOCKENTRY *block;
 };
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, MPQ_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
 static int host_is_little_endian(void)
 {

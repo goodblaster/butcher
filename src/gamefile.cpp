@@ -6,19 +6,11 @@
  * read off the game's source.
  */
 #include "gamefile.h"
+#include "errbuf.h"
 
-#include <stdarg.h>
 #include <stddef.h> /* offsetof */
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, MPQ_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
 /* ------------------------------------------------------------------ */
 /* Little-endian access                                                */
