@@ -120,7 +120,35 @@ int save_has_game(const char *path);
 int mpq_replace_file(const char *path, const char *name, const BYTE *data,
     DWORD len, char *err);
 
+/** One member for mpq_replace_files. */
+typedef struct MpqReplacement {
+	const char *name;
+	const BYTE *data;
+	DWORD len;
+} MpqReplacement;
+
+/** Most members one mpq_replace_files call accepts. */
+#define MPQ_REPLACE_MAX 4
+
+/**
+ * Replace several existing files in one rewrite.
+ *
+ * Same guarantees as mpq_replace_file, applied to the set as a whole: either
+ * every member is replaced and verified, under a single rename, or the
+ * original is untouched. A save that needs `hero` and `game` changed together
+ * must use this, never two calls in a row.
+ */
+int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
+    char *err);
+
 /** Encode a PkPlayerStruct and write it back as `hero`. */
 int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err);
+
+/**
+ * Write `hero` and, if @p game is non-NULL, the decoded saved game @p game,
+ * both encoded for single player, in one atomic rewrite of the archive.
+ */
+int save_write_character(const char *path, const PkPlayerStruct *hero,
+    const BYTE *game, DWORD game_len, char *err);
 
 #endif /* BUTCHER_SAVEFILE_H */

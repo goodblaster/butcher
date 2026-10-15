@@ -249,24 +249,18 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 		return 0;
 	}
 
-	if (!save_write_hero(path, h, err)) {
-		free(game);
+	/*
+	 * One rewrite for both members. Two in a row could fail between them and
+	 * leave the save disagreeing with itself, which is the half-applied edit
+	 * the work above exists to prevent.
+	 */
+	int had_game = game != NULL;
+	int wrote = save_write_character(path, h, game, glen, err);
+	free(game);
+	if (!wrote)
 		return 0;
-	}
-
-	if (game != NULL) {
-		int ok = game_write(path, game, glen, gerr);
-		free(game);
-		if (!ok) {
-			seterr(err, "the character was written but the saved game was not: "
-			            "%s. The save now disagrees with itself -- restore the "
-			            "backup.",
-			    gerr);
-			return 0;
-		}
-		if (sync != NULL)
-			*sync = items_synced ? SAVE_GAME_SYNCED_ITEMS : SAVE_GAME_SYNCED;
-	}
+	if (had_game && sync != NULL)
+		*sync = items_synced ? SAVE_GAME_SYNCED_ITEMS : SAVE_GAME_SYNCED;
 
 	/* Never leave a save in place that does not read back as written. */
 	PkPlayerStruct after;

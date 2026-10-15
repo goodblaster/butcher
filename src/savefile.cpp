@@ -519,11 +519,28 @@ static int write_all(FILE *f, const void *buf, size_t len)
 int mpq_replace_file(const char *path, const char *name, const BYTE *data,
     DWORD len, char *err)
 {
+	MpqReplacement r = { name, data, len };
+	return mpq_replace_files(path, &r, 1, err);
+}
+
+/** Index into the replacement list for an old block, or -1 if untouched. */
+static int target_of(const int *target_block, int n, int old_index)
+{
+	for (int t = 0; t < n; t++) {
+		if (target_block[t] == old_index)
+			return t;
+	}
+	return -1;
+}
+
+int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
+    char *err)
+{
 	MpqArchive *a = NULL;
 	_BLOCKENTRY *newblk = NULL;
 	_HASHENTRY *newhash = NULL;
 	LiveBlock *live = NULL;
-	BYTE *body = NULL;
+	BYTE *body[MPQ_REPLACE_MAX] = { NULL };
 	BYTE *copybuf = NULL;
 	char *tmppath = NULL;
 	FILE *out = NULL;
@@ -531,27 +548,46 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 
 	/* Declared up front: every failure path jumps to `out`, and C++ forbids
 	 * a goto that bypasses an initialization still in scope at the label. */
-	int target_hash, target_block, nlive, i, h;
-	DWORD body_len, cursor;
+	int target_block[MPQ_REPLACE_MAX];
+	DWORD body_len[MPQ_REPLACE_MAX];
+	int nlive, i, h, t;
+	DWORD cursor;
 	int remap[MPQ_INDEX_ENTRIES];
+
+	if (n < 1 || n > MPQ_REPLACE_MAX) {
+		seterr(err, "cannot replace %d files at once (1..%d)", n, MPQ_REPLACE_MAX);
+		return 0;
+	}
 
 	a = mpq_open(path, err);
 	if (a == NULL)
 		return 0;
 
-	target_hash = find_hash_index(a, name);
-	if (target_hash < 0) {
-		seterr(err, "\"%s\" does not exist in the archive (this tool replaces "
-		            "files, it does not add them)",
-		    name);
-		goto out;
-	}
-	target_block = a->hash[target_hash].block;
+	/*
+	 * Every member is resolved and encoded before anything is written. Doing
+	 * them together is the point: a save whose `hero` and `game` were written
+	 * by two separate renames could be left holding one new and one old copy
+	 * of the character if the second failed.
+	 */
+	for (t = 0; t < n; t++) {
+		int hidx = find_hash_index(a, files[t].name);
+		if (hidx < 0) {
+			seterr(err, "\"%s\" does not exist in the archive (this tool replaces "
+			            "files, it does not add them)",
+			    files[t].name);
+			goto out;
+		}
+		target_block[t] = a->hash[hidx].block;
+		if (target_of(target_block, t, target_block[t]) >= 0) {
+			seterr(err, "\"%s\" was named twice in one replacement", files[t].name);
+			goto out;
+		}
 
-	body_len = 0;
-	body = build_file_body(data, len, &body_len, err);
-	if (body == NULL)
-		goto out;
+		body_len[t] = 0;
+		body[t] = build_file_body(files[t].data, files[t].len, &body_len[t], err);
+		if (body[t] == NULL)
+			goto out;
+	}
 
 	/* Collect live blocks, in their original on-disk order so an unchanged
 	 * archive rewrites to the same layout. */
@@ -598,14 +634,13 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 
 	cursor = MPQ_DATA_OFFSET;
 	for (i = 0; i < nlive; i++) {
-		DWORD size = (live[i].old_index == target_block)
-		    ? body_len
-		    : (DWORD)live[i].blk.sizealloc;
+		t = target_of(target_block, n, live[i].old_index);
+		DWORD size = t >= 0 ? body_len[t] : (DWORD)live[i].blk.sizealloc;
 
 		newblk[i].offset = (int)cursor;
 		newblk[i].sizealloc = (int)size;
-		if (live[i].old_index == target_block) {
-			newblk[i].sizefile = (int)len;
+		if (t >= 0) {
+			newblk[i].sizefile = (int)files[t].len;
 			newblk[i].flags = (int)(MPQ_FLAG_EXISTS | MPQ_FLAG_IMPLODE);
 		} else {
 			newblk[i].sizefile = live[i].blk.sizefile;
@@ -707,9 +742,10 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 		goto out;
 	}
 	for (i = 0; i < nlive; i++) {
-		if (live[i].old_index == target_block) {
-			if (!write_all(out, body, body_len)) {
-				seterr(err, "short write writing \"%s\"", name);
+		t = target_of(target_block, n, live[i].old_index);
+		if (t >= 0) {
+			if (!write_all(out, body[t], body_len[t])) {
+				seterr(err, "short write writing \"%s\"", files[t].name);
 				goto out;
 			}
 			continue;
@@ -757,23 +793,28 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 			    verr);
 			goto out;
 		}
-		DWORD got_len = 0;
-		BYTE *got = mpq_read_file(v, name, &got_len, verr);
+		for (t = 0; t < n; t++) {
+			DWORD got_len = 0;
+			BYTE *got = mpq_read_file(v, files[t].name, &got_len, verr);
+			if (got == NULL) {
+				mpq_close(v);
+				seterr(err, "wrote a file whose \"%s\" will not read back (%s); "
+				            "original left untouched",
+				    files[t].name, verr);
+				goto out;
+			}
+			int same = (got_len == files[t].len)
+			    && memcmp(got, files[t].data, files[t].len) == 0;
+			free(got);
+			if (!same) {
+				mpq_close(v);
+				seterr(err, "verification failed: \"%s\" read back differently; "
+				            "original left untouched",
+				    files[t].name);
+				goto out;
+			}
+		}
 		mpq_close(v);
-		if (got == NULL) {
-			seterr(err, "wrote a file whose \"%s\" will not read back (%s); "
-			            "original left untouched",
-			    name, verr);
-			goto out;
-		}
-		int same = (got_len == len) && memcmp(got, data, len) == 0;
-		free(got);
-		if (!same) {
-			seterr(err, "verification failed: \"%s\" read back differently; "
-			            "original left untouched",
-			    name);
-			goto out;
-		}
 	}
 
 	if (rename(tmppath, path) != 0) {
@@ -792,7 +833,8 @@ out:
 		free(tmppath);
 	}
 	mpq_close(a);
-	free(body);
+	for (t = 0; t < MPQ_REPLACE_MAX; t++)
+		free(body[t]);
 	free(copybuf);
 	free(live);
 	free(newblk);
@@ -806,8 +848,16 @@ out:
 
 int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 {
+	return save_write_character(path, hero, NULL, 0, err);
+}
+
+int save_write_character(const char *path, const PkPlayerStruct *hero,
+    const BYTE *game, DWORD game_len, char *err)
+{
 	DWORD plain = (DWORD)sizeof(*hero);
 	DWORD enc = codec_get_encoded_len(plain);
+	BYTE *gbuf = NULL;
+	DWORD genc = 0;
 
 	BYTE *buf = (BYTE *)calloc(1, enc);
 	if (buf == NULL) {
@@ -817,8 +867,28 @@ int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 	memcpy(buf, hero, plain);
 	codec_encode(buf, plain, enc, SAVE_PASSWORD_SINGLE);
 
-	int r = mpq_replace_file(path, "hero", buf, enc, err);
+	MpqReplacement files[2] = { { "hero", buf, enc } };
+	int n = 1;
+
+	if (game != NULL) {
+		genc = codec_get_encoded_len(game_len);
+		gbuf = (BYTE *)calloc(1, genc);
+		if (gbuf == NULL) {
+			free(buf);
+			seterr(err, "out of memory");
+			return 0;
+		}
+		memcpy(gbuf, game, game_len);
+		codec_encode(gbuf, game_len, genc, SAVE_PASSWORD_SINGLE);
+		files[1].name = "game";
+		files[1].data = gbuf;
+		files[1].len = genc;
+		n = 2;
+	}
+
+	int r = mpq_replace_files(path, files, n, err);
 	free(buf);
+	free(gbuf);
 	return r;
 }
 
