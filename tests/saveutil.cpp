@@ -11,6 +11,7 @@
  * destroy an existing backup.
  */
 #include "../src/saveutil.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -186,11 +187,6 @@ static void make_game_blob_ex(BYTE *out, const PkPlayerStruct *h, int stale_tail
 	memcpy(out + grid_at, h->InvGrid, NUM_INV_GRID_ELEM);
 }
 
-/** @param stale_tail leave junk after the name, as a renamed character has. */
-static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
-{
-	make_game_blob_ex(out, h, stale_tail, GAME_FIXTURE_LEVELS);
-}
 
 /**
  * Write a one-file save archive containing this character.
@@ -199,7 +195,7 @@ static void make_game_blob(BYTE *out, const PkPlayerStruct *h, int stale_tail)
  */
 static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_game)
 {
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, hero, sizeof(*hero));
 	codec_encode(blob, sizeof(*hero), 1288, SAVE_PASSWORD_SINGLE);
@@ -247,7 +243,9 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 		/* Stored the way the game stores it: imploded, in 4096-byte sectors. */
 		DWORD nsec = (genc + MPQ_SECTOR_SIZE - 1) / MPQ_SECTOR_SIZE;
 		DWORD gstart = total;
-		DWORD *goffs = (DWORD *)(body + gstart);
+		/* Not a DWORD pointer: gstart follows hero's body, so it is
+		 * rarely aligned. */
+		BYTE *goffs = body + gstart;
 		DWORD pos = (nsec + 1) * (DWORD)sizeof(DWORD);
 
 		for (DWORD s = 0; s < nsec; s++) {
@@ -257,11 +255,11 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 			BYTE gsector[MPQ_SECTOR_SIZE];
 			memcpy(gsector, gbuf + s * MPQ_SECTOR_SIZE, raw);
 			int gstored = PkwareCompress(gsector, (int)raw);
-			goffs[s] = pos;
+			memcpy(goffs + s * sizeof(DWORD), &pos, sizeof(DWORD));
 			memcpy(body + gstart + pos, gsector, (size_t)gstored);
 			pos += (DWORD)gstored;
 		}
-		goffs[nsec] = pos;
+		memcpy(goffs + nsec * sizeof(DWORD), &pos, sizeof(DWORD));
 		free(gbuf);
 
 		block[1].offset = (int)(MPQ_DATA_OFFSET + gstart);
@@ -409,7 +407,7 @@ static void check_game_in_progress(void)
 			fseek(f, 0, SEEK_END);
 			long sz = ftell(f);
 			fclose(f);
-			truncate(broken, sz - 64);
+			test_truncate(broken, sz - 64);
 		}
 		err[0] = '\0';
 		PkPlayerStruct edit2 = back;
@@ -616,7 +614,7 @@ static void check_discovery(void)
 
 	char dir[SAVE_PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/saves", g_tmpdir);
-	mkdir(dir, 0755);
+	test_mkdir(dir);
 
 	PkPlayerStruct a, b, c;
 	base_hero(&a, "Aidan", PC_WARRIOR);
@@ -662,7 +660,7 @@ static void check_discovery(void)
 
 	char empty[SAVE_PATH_MAX];
 	snprintf(empty, sizeof(empty), "%s/nothing-here", g_tmpdir);
-	mkdir(empty, 0755);
+	test_mkdir(empty);
 	ok(save_scan_dir(empty, found, SAVE_MAX_SLOTS) == 0, "an empty directory finds none");
 	ok(save_scan_dir("/no/such/place", found, SAVE_MAX_SLOTS) == 0,
 	    "a missing directory finds none rather than failing");
@@ -820,7 +818,7 @@ static void check_collisions(void)
 
 	char dir[SAVE_PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s/coll", g_tmpdir);
-	mkdir(dir, 0755);
+	test_mkdir(dir);
 
 	PkPlayerStruct a, b;
 	base_hero(&a, "Aidan", PC_WARRIOR);
@@ -913,7 +911,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("butcher -- shared save utilities\n");

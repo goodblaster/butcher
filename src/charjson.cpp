@@ -289,8 +289,12 @@ static void read_pair(const JValue *v, int *cur, int *max)
 {
 	long long c = jv_get_int(v, "current", 0);
 	long long m = jv_get_int(v, "max", 0);
-	*cur = (int)((c << HERO_FIXED_SHIFT) | (jv_get_int(v, "current_64ths", 0) & 63));
-	*max = (int)((m << HERO_FIXED_SHIFT) | (jv_get_int(v, "max_64ths", 0) & 63));
+	/* Shifted unsigned: a negative or huge value is the checker's to report,
+	 * and shifting it signed would be undefined before it got the chance. */
+	*cur = (int)(((unsigned long long)c << HERO_FIXED_SHIFT)
+	    | (unsigned long long)(jv_get_int(v, "current_64ths", 0) & 63));
+	*max = (int)(((unsigned long long)m << HERO_FIXED_SHIFT)
+	    | (unsigned long long)(jv_get_int(v, "max_64ths", 0) & 63));
 }
 
 /**
@@ -417,8 +421,17 @@ int charjson_read(const char *text, PkPlayerStruct *out, HeroFlavor *flavor, cha
 	h.pBaseDex = (BYTE)jv_get_int(a, "dexterity", 0);
 	h.pBaseVit = (BYTE)jv_get_int(a, "vitality", 0);
 
-	read_pair(jv_get(root, "life"), &h.pHPBase, &h.pMaxHPBase);
-	read_pair(jv_get(root, "mana"), &h.pManaBase, &h.pMaxManaBase);
+	/*
+	 * Through locals: PkPlayerStruct is #pragma pack(1), so its ints are not
+	 * aligned and a plain int* into one is a misaligned store.
+	 */
+	int cur, max;
+	read_pair(jv_get(root, "life"), &cur, &max);
+	h.pHPBase = cur;
+	h.pMaxHPBase = max;
+	read_pair(jv_get(root, "mana"), &cur, &max);
+	h.pManaBase = cur;
+	h.pMaxManaBase = max;
 
 	const JValue *p = jv_get(root, "position");
 	h.plrlevel = (BYTE)jv_get_int(p, "dungeon_level", 0);

@@ -5,11 +5,11 @@
  * spell lookup, and the game's own limit tables.
  */
 #include "hero.h"
+#include "errbuf.h"
 
 #include "../third_party/devilution/Source/spelldat.h"
 #include "../third_party/devilution/Source/itemdat.h"
 
-#include <stdarg.h>
 
 /*
  * Hellfire's copies of the two data tables. Source/spelldat.cpp and
@@ -73,15 +73,7 @@ CT_ASSERT(IDI_GOLD == 0, hero_gold_is_index_zero);
 /* Limits                                                              */
 /* ------------------------------------------------------------------ */
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, HERO_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), HERO_ERR_LEN, __VA_ARGS__)
 
 HeroFlavor hero_flavor_for_path(const char *path)
 {

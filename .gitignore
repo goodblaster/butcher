@@ -1,4 +1,6 @@
 build/
+build-san-*/
+build-fuzz/
 
 # Game asset archives are hundreds of MB and are not part of this project.
 *.MPQ

@@ -11,6 +11,7 @@
  * writing a wrong number, so the invariants are checked exhaustively.
  */
 #include "../src/format.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -736,7 +737,7 @@ static void check_end_to_end(void)
 	base_hero(&plain, PC_SORCERER);
 	strcpy(plain.pName, "Jazreth");
 
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, &plain, sizeof(plain));
 	codec_encode(blob, sizeof(plain), 1288, SAVE_PASSWORD_SINGLE);
@@ -939,7 +940,7 @@ static void check_hellfire(void)
 	if (!hero_validate(&h, FLAVOR_HELLFIRE, err))
 		printf("        %s\n", err);
 
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, &h, sizeof(h));
 	codec_encode(blob, sizeof(h), 1288, SAVE_PASSWORD_SINGLE);
@@ -968,7 +969,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 4 editor\n");

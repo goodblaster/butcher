@@ -3,11 +3,11 @@
  *
  * Character editor CLI: list, show, set, dump, patch.
  */
+#include "../src/compat/platform.h"
 #include "../src/charjson.h"
 #include "../src/format.h"
 #include "../src/saveutil.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <strings.h> /* strcasecmp */
@@ -50,11 +50,14 @@ static void warn_if_game_in_progress(const char *path)
  * override. The packed struct is identical between the two, so this only
  * affects interpretation -- class names, stat caps, spell and item tables.
  */
-static HeroFlavor g_flavor_override = (HeroFlavor)-1;
+static HeroFlavor g_flavor_override = FLAVOR_DIABLO;
+/* Separate from the value: -1 is not a HeroFlavor, and loading one that was
+ * forced into the enum is undefined. */
+static int g_flavor_forced = 0;
 
 static HeroFlavor flavor_of(const char *path)
 {
-	if (g_flavor_override != (HeroFlavor)-1)
+	if (g_flavor_forced)
 		return g_flavor_override;
 	return hero_flavor_for_path(path);
 }
@@ -64,12 +67,15 @@ static int take_flavor_flags(int *argc, char **argv)
 {
 	int out = 0;
 	for (int i = 0; i < *argc; i++) {
-		if (strcmp(argv[i], "--hellfire") == 0)
+		if (strcmp(argv[i], "--hellfire") == 0) {
 			g_flavor_override = FLAVOR_HELLFIRE;
-		else if (strcmp(argv[i], "--diablo") == 0)
+			g_flavor_forced = 1;
+		} else if (strcmp(argv[i], "--diablo") == 0) {
 			g_flavor_override = FLAVOR_DIABLO;
-		else
+			g_flavor_forced = 1;
+		} else {
 			argv[out++] = argv[i];
+		}
 	}
 	*argc = out;
 	return 0;
@@ -990,7 +996,7 @@ static int cmd_validate(int argc, char **argv)
 			dl_add(&dl, DIAG_ERROR, NULL, "%s", err);
 			break;
 		}
-		if (g_flavor_override != (HeroFlavor)-1)
+		if (g_flavor_forced)
 			f = g_flavor_override;
 		hero_check(&h, f, &dl);
 		checked_character = 1;
@@ -999,7 +1005,7 @@ static int cmd_validate(int argc, char **argv)
 	case INPUT_RAW_STRUCT:
 		memcpy(&h, bytes, sizeof(h));
 		f = flavor_of(path);
-		if (g_flavor_override != (HeroFlavor)-1)
+		if (g_flavor_forced)
 			f = g_flavor_override;
 		hero_check(&h, f, &dl);
 		checked_character = 1;
@@ -1020,7 +1026,7 @@ static int cmd_validate(int argc, char **argv)
 		{
 			char jerr[JSON_ERR_LEN];
 			if (charjson_read(bytes, &h, &f, jerr)) {
-				if (g_flavor_override != (HeroFlavor)-1)
+				if (g_flavor_forced)
 					f = g_flavor_override;
 				int before = dl_count(&dl, DIAG_ERROR);
 				hero_check(&h, f, &dl);
@@ -1329,7 +1335,7 @@ int cli_main(int argc, char **argv)
 	 * block-buffered whenever output is piped or captured, and the warnings
 	 * surface before the diff they refer to.
 	 */
-	setvbuf(stdout, NULL, _IOLBF, 0);
+	plat_stdout_line_buffered();
 
 	if (argc < 2)
 		return usage();

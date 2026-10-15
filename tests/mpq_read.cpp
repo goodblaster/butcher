@@ -14,6 +14,7 @@
  * retail game. Point BUTCHER_SAVE at a real single_N.sv to check that.
  */
 #include "../src/hero.h"
+#include "portable.h"
 #include "../src/savefile.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
@@ -216,7 +217,7 @@ static void make_hero_blob(BYTE *out1288, PkPlayerStruct *plain)
 /* 1. Happy path                                                       */
 /* ------------------------------------------------------------------ */
 
-static BYTE g_blob[1288];
+alignas(4) static BYTE g_blob[1288];
 static PkPlayerStruct g_plain;
 
 static void check_roundtrip(void)
@@ -418,7 +419,7 @@ static void check_rejections(void)
 	Entry e = { "hero", g_blob, 1288 };
 	const char *path = tmppath("truncated.sv");
 	build_archive(path, &e, 1);
-	truncate(path, 5000);
+	test_truncate(path, 5000);
 	expect_refusal(path, "truncated archive refused");
 
 	/* Not an MPQ at all. */
@@ -435,7 +436,7 @@ static void check_rejections(void)
 	expect_refusal(empty, "empty file refused");
 
 	/* Corrupt payload at the codec layer: valid MPQ, bad plaintext. */
-	BYTE bad[1288];
+	alignas(4) BYTE bad[1288];
 	memcpy(bad, g_blob, sizeof(bad));
 	bad[64] ^= 0xFF;
 	Entry be = { "hero", bad, 1288 };
@@ -529,7 +530,7 @@ static void check_real_save(void)
 		return;
 	}
 
-	BYTE original[1288];
+	alignas(4) BYTE original[1288];
 	memcpy(original, raw, 1288);
 
 	int decoded = codec_decode(raw, 1288, SAVE_PASSWORD_SINGLE);
@@ -561,7 +562,7 @@ static void check_real_save(void)
 	 * on a save written by the retail game, the msvcrt-rand shim and the
 	 * X-SHA-1 build are both correct.
 	 */
-	BYTE reenc[1288];
+	alignas(4) BYTE reenc[1288];
 	memset(reenc, 0, sizeof(reenc));
 	memcpy(reenc, raw, sizeof(PkPlayerStruct));
 	codec_encode(reenc, sizeof(PkPlayerStruct), 1288, SAVE_PASSWORD_SINGLE);
@@ -580,7 +581,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 2 MPQ reader\n");

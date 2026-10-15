@@ -1,0 +1,3 @@
+// Windows resources for butcher.exe: just the manifest. 1 is
+// CREATEPROCESS_MANIFEST_RESOURCE_ID and 24 is RT_MANIFEST.
+1 24 "butcher.manifest"
