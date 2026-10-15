@@ -867,7 +867,7 @@ static void check_input_kinds(void)
 	PkPlayerStruct h;
 	base_hero(&h, PC_WARRIOR);
 
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, &h, sizeof(h));
 	codec_encode(blob, sizeof(h), 1288, SAVE_PASSWORD_SINGLE);

@@ -893,7 +893,9 @@ int save_create(const char *path, const PkPlayerStruct *h, char *err)
 		return 0;
 	}
 
-	BYTE blob[1288];
+	/* Aligned because codec_encode writes its trailer through a struct
+	 * pointer into the buffer's tail; the game only ever passes it heap. */
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, h, sizeof(*h));
 	codec_encode(blob, sizeof(*h), sizeof(blob), SAVE_PASSWORD_SINGLE);

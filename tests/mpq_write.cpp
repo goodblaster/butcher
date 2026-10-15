@@ -189,7 +189,7 @@ done:
 
 /* ------------------------------------------------------------------ */
 
-static BYTE g_blob[1288];
+alignas(4) static BYTE g_blob[1288];
 static PkPlayerStruct g_plain;
 
 static void make_hero(PkPlayerStruct *p, const char *name, int level, int gold)
@@ -752,7 +752,7 @@ static void check_multi(void)
 
 	PkPlayerStruct edited = g_plain;
 	edited.pGold = 4321;
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	encode_hero(&edited, blob);
 
 	char err[MPQ_ERR_LEN] = { 0 };

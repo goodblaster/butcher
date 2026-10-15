@@ -194,7 +194,7 @@ static void make_game_blob_ex(BYTE *out, const PkPlayerStruct *h, int stale_tail
  */
 static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_game)
 {
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, hero, sizeof(*hero));
 	codec_encode(blob, sizeof(*hero), 1288, SAVE_PASSWORD_SINGLE);
@@ -242,7 +242,9 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 		/* Stored the way the game stores it: imploded, in 4096-byte sectors. */
 		DWORD nsec = (genc + MPQ_SECTOR_SIZE - 1) / MPQ_SECTOR_SIZE;
 		DWORD gstart = total;
-		DWORD *goffs = (DWORD *)(body + gstart);
+		/* Not a DWORD pointer: gstart follows hero's body, so it is
+		 * rarely aligned. */
+		BYTE *goffs = body + gstart;
 		DWORD pos = (nsec + 1) * (DWORD)sizeof(DWORD);
 
 		for (DWORD s = 0; s < nsec; s++) {
@@ -252,11 +254,11 @@ static int make_save_ex(const char *path, const PkPlayerStruct *hero, int with_g
 			BYTE gsector[MPQ_SECTOR_SIZE];
 			memcpy(gsector, gbuf + s * MPQ_SECTOR_SIZE, raw);
 			int gstored = PkwareCompress(gsector, (int)raw);
-			goffs[s] = pos;
+			memcpy(goffs + s * sizeof(DWORD), &pos, sizeof(DWORD));
 			memcpy(body + gstart + pos, gsector, (size_t)gstored);
 			pos += (DWORD)gstored;
 		}
-		goffs[nsec] = pos;
+		memcpy(goffs + nsec * sizeof(DWORD), &pos, sizeof(DWORD));
 		free(gbuf);
 
 		block[1].offset = (int)(MPQ_DATA_OFFSET + gstart);
