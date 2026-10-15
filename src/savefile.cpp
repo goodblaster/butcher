@@ -925,6 +925,14 @@ int save_create(const char *path, const PkPlayerStruct *h, char *err)
 	BYTE sector[MPQ_SECTOR_SIZE];
 	memcpy(sector, blob, sizeof(blob));
 	int stored = PkwareCompress(sector, (int)sizeof(blob));
+	if (stored <= 0 || (size_t)stored > sizeof(blob)) {
+		free(block);
+		free(hash);
+		fclose(f);
+		remove(path);
+		seterr(err, "the character compressed to an invalid size %d", stored);
+		return 0;
+	}
 	offs[0] = 8;
 	offs[1] = 8 + (DWORD)stored;
 	memcpy(body + 8, sector, (size_t)stored);
