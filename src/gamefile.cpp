@@ -6,19 +6,11 @@
  * read off the game's source.
  */
 #include "gamefile.h"
+#include "errbuf.h"
 
-#include <stdarg.h>
 #include <stddef.h> /* offsetof */
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, MPQ_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
 /* ------------------------------------------------------------------ */
 /* Little-endian access                                                */
@@ -664,20 +656,4 @@ BYTE *game_read(const char *path, DWORD *out_len, int *present, char *err)
 	}
 	*out_len = dec;
 	return buf;
-}
-
-int game_write(const char *path, const BYTE *buf, DWORD len, char *err)
-{
-	DWORD enc = codec_get_encoded_len(len);
-	BYTE *out = (BYTE *)malloc(enc);
-	if (out == NULL) {
-		seterr(err, "out of memory");
-		return 0;
-	}
-	memcpy(out, buf, len);
-	codec_encode(out, len, enc, SAVE_PASSWORD_SINGLE);
-
-	int ok = mpq_replace_file(path, "game", out, enc, err);
-	free(out);
-	return ok;
 }

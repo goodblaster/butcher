@@ -14,6 +14,7 @@
  * merely the ones a hand-written fixture happened to set.
  */
 #include "../src/charjson.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -474,7 +475,7 @@ static void check_end_to_end(void)
 	h.pHPBase = 3458; /* keep a fraction in play */
 	h.pMaxHPBase = 3458;
 
-	BYTE blob[1288];
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, &h, sizeof(h));
 	codec_encode(blob, sizeof(h), 1288, SAVE_PASSWORD_SINGLE);
@@ -574,7 +575,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 5 JSON format\n");

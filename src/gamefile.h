@@ -133,8 +133,11 @@ int game_apply(BYTE *buf, DWORD len, const GameLoc *loc, const PkPlayerStruct *h
 int game_apply_inventory(BYTE *buf, DWORD len, const GameLoc *loc,
     const PkPlayerStruct *old, const PkPlayerStruct *neu, char *err);
 
-/** Encode and replace the "game" member of the archive. */
-int game_write(const char *path, const BYTE *buf, DWORD len, char *err);
+/*
+ * There is deliberately no game_write. The saved game is only ever written
+ * together with `hero`, by save_write_character, so the two copies of the
+ * character cannot be left disagreeing by a failure between two rewrites.
+ */
 
 /**
  * Print both copies of every field this module knows, side by side.

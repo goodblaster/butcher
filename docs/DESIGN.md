@@ -7,6 +7,12 @@ before any code existed; it has been updated as each part landed, so it doubles
 as a record of what was tried and what the measurements showed. Paths below
 refer to the devilution submodule under `third_party/devilution`.
 
+**Read the phases as history.** References to `tools/butcher` and
+`make -C tools/butcher` date from when this lived inside the devilution tree;
+the project is now standalone, built from its own root with `make`. Where a
+plan below was later overtaken, the section says so, and "Later changes" at
+the end records what changed after the phases were done.
+
 ## Scope
 
 **In scope.** Read a save file, print the character's identity and scalar attributes, change one or more of them, write the file back so the retail game and Devilution both load it without complaint.
@@ -28,7 +34,7 @@ Editable fields (all live in `PkPlayerStruct`, `structs.h:1462`):
 | Dungeon level | `plrlevel` | BYTE | |
 | Diablo kill level | `pDiabloKillLevel` | DWORD | Hero rank shown in the UI |
 
-**Out of scope, deliberately.** Items. `PkItemStruct` stores an RNG seed plus a create-info word, and `UnPackItem` regenerates the item by replaying `RecreateItem`/`RecreateEar` against the game's item tables. There is no field holding "+3 fire damage" to edit — you would have to search seed space for an item with the properties you want, which is a different and much larger project. The editor will *display* item slots (base index and durability/charges) read-only.
+**Out of scope, deliberately.** Items — with one exception found later: gold piles, which the game regenerates from nothing but a value, so they can be rewritten (see "Gold is a lie", and `docs/GAMEFILE.md` for the copy in a saved game). `PkItemStruct` stores an RNG seed plus a create-info word, and `UnPackItem` regenerates the item by replaying `RecreateItem`/`RecreateEar` against the game's item tables. There is no field holding "+3 fire damage" to edit — you would have to search seed space for an item with the properties you want, which is a different and much larger project. The editor will *display* item slots (base index and durability/charges) read-only.
 
 Also out of scope: a GUI, multiplayer `.drv` hero files, and editing the `game`/`perml*`/`perms*` level files inside the archive.
 
@@ -183,11 +189,13 @@ Host-native is the point: the editor should run on the machine where the saves l
 
 CI: add a job to `.github/workflows/build_mac.yml` (or a new workflow) that builds the tool and runs the round-trip test. Do **not** add it to `.circleci/config.yml` — those jobs exist to measure binary accuracy and a tool build would only add noise to that signal.
 
+*Done, once standalone:* `.github/workflows/ci.yml` builds and tests on Linux, macOS and Windows, runs the suites under the sanitizers, and fuzzes the parsers. See "Later changes".
+
 ## Phases
 
 **Phase 1 — Prove the crypto (highest risk, do it first). — DONE, pending real-save verification.**
 
-Implemented in ``; run with `make -C tools/butcher check`. 35 checks, all passing:
+Implemented in `tests/crypto.cpp`; run with `make check`. 35 checks, all passing:
 
 - Layout pinned at compile time. Measured, not assumed: `sizeof(PkItemStruct) == 19`, `sizeof(PkPlayerStruct) == 1266`, `codec_get_encoded_len(1266) == 1288`. The hand-derived 1266 in this document was correct; one offset in the original derivation was not (`pDiabloKillLevel` is at 1234, not 1238). All 24 field offsets the editor touches are now asserted.
 - msvcrt LCG matches the published `srand(1)` sequence (41, 18467, 6334, …), the only external reference point available without a Windows host.
@@ -247,8 +255,6 @@ Properties the suite enforces, roughly in order of how badly a violation would h
 - Validation covers per-class stat caps, level 1–50, class range, negative/over-cap experience, life above maximum, life below 1 (the game rewrites it on load), dungeon level, `_pNumInv`, and names (empty, over-length, path separators, control characters). Out-of-range values are refused unless `--force`.
 
 **Phase 5 — Polish. — Absorbed into phase 4.** Backups (refusing to overwrite an existing `.bak`), `--dry-run` diff output, and errors that distinguish "not an MPQ" / "no hero file" / "wrong password" / "unexpected size" were all built as they became relevant. One item was found only by running the tool: stdout is block-buffered when piped, so stderr warnings surfaced *before* the stdout diff they referred to; fixed with `setvbuf`.
-
-**Phase 5 — Polish.** Backups, `--dry-run` diff output, clear errors distinguishing "not an MPQ", "no hero file", "wrong password / corrupt", "unexpected struct size".
 
 ## Test data
 
@@ -378,3 +384,40 @@ can tell a missing file from an invalid one.
 - ~~**Hellfire.**~~ Done. See below.
 - **Spawn (shareware) saves** use different passwords and filenames. Cheap to add (a `--spawn` flag selecting the password); worth doing only if someone wants it.
 - **Multiplayer `.drv` files** may be keyed on `GetComputerName`, so a save is only readable on the machine that wrote it unless the user supplies the name. Support would mean a `--password` escape hatch.
+
+## Later changes
+
+Recorded here because each one corrected something the sections above assumed.
+
+**`hero` and `game` are written in one rename.** Once the saved game had to be
+kept in step (`docs/GAMEFILE.md`), a save was rewritten twice per edit — once
+per member — and a failure in the second left the two copies of the character
+disagreeing, with a backup as the only remedy. `mpq_replace_files` replaces any
+set of members under the same rebuild, verify and rename as before, so the pair
+lands together or not at all.
+
+**The Linux build never compiled.** `shim.h` renamed `rand` with a macro for
+every file that included it, and libstdc++'s `<algorithm>` names `std::rand`.
+Apple's libc++ does not, so nothing showed it until CI ran on Linux. The macro
+is now confined to the game's own sources, which are the only code that needs
+the msvcrt sequence.
+
+**UBSan found four defects in butcher's own code.** A stack buffer handed to
+`codec_encode`, which writes its trailer through a struct pointer and so needs
+alignment the game's heap buffers always had; `int *` pointers into the packed
+`PkPlayerStruct`; a negative value shifted left; and an enum holding a value
+outside its range as a sentinel. None misbehaved on the compilers in use, which
+is the reason to fix them before one does. X-SHA-1 itself relies on signed
+`int` wrapping — undefined in C++17, and the game's actual checksum — so those
+two arithmetic checks are off for vendored sources only, with the crypto suite
+pinning the digests instead.
+
+**Windows.** The write path was POSIX: `mkstemp`, `fsync`, `fchmod`, and
+`rename` over an existing file, which Windows refuses. `src/compat/platform.h`
+now holds each of those, with `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)` as
+the Windows replace. Two Windows-only traps were designed out rather than
+found: the original archive is closed before the rename, since Windows will not
+replace a file the process holds open, and stdin/stdout are switched to binary,
+since a save piped through text mode would be altered. The executable's
+manifest makes UTF-8 the process code page, so narrow paths need no conversion.
+

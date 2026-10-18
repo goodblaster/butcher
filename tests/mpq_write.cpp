@@ -14,6 +14,7 @@
  *   5. The result reads back as intended.
  */
 #include "../src/savefile.h"
+#include "portable.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 
@@ -189,7 +190,7 @@ done:
 
 /* ------------------------------------------------------------------ */
 
-static BYTE g_blob[1288];
+alignas(4) static BYTE g_blob[1288];
 static PkPlayerStruct g_plain;
 
 static void make_hero(PkPlayerStruct *p, const char *name, int level, int gold)
@@ -257,9 +258,15 @@ static void check_idempotent(void)
 	 * user's save.
 	 */
 	{
+#ifdef _WIN32
+		/* No permission bits to lose: Windows reports 0666 for any
+		 * writable file, and the replacement is created writable. */
+		printf("  SKIP  file permissions (Windows has no mode bits)\n");
+#else
 		struct stat st;
 		ok(stat(path, &st) == 0 && (st.st_mode & 07777) == 0644,
 		    "file permissions preserved (0644, not mkstemp's 0600)");
+#endif
 	}
 
 	/* And again, to be sure it is stable under repetition. */
@@ -627,7 +634,7 @@ static void count_blocks(const char *path, int *live, int *gaps)
 
 static void check_real_save(void)
 {
-	section("7. real save");
+	section("8. real save");
 
 	const char *path = getenv("BUTCHER_SAVE");
 	if (path == NULL || path[0] == '\0') {
@@ -714,6 +721,115 @@ static void check_real_save(void)
 	ok(file_hash(copy) == settled, "a compacted archive is then byte-stable");
 }
 
+
+/* ------------------------------------------------------------------ */
+/* 7. Several files in one rewrite                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A save with a game in progress has its character in both `hero` and `game`,
+ * and an edit has to change the two together. Two rewrites in a row could
+ * fail between them and leave one new copy and one old; one rewrite cannot.
+ */
+static void check_multi(void)
+{
+	section("7. several files replaced in one rewrite");
+
+	DWORD big = 9000;
+	BYTE *noise = (BYTE *)malloc(big);
+	BYTE *noise2 = (BYTE *)malloc(big + 300);
+	uint32_t s = 4242;
+	for (DWORD i = 0; i < big; i++) {
+		s = s * 1103515245u + 12345u;
+		noise[i] = (BYTE)(s >> 16);
+	}
+	for (DWORD i = 0; i < big + 300; i++) {
+		s = s * 1103515245u + 12345u;
+		noise2[i] = (BYTE)(s >> 16);
+	}
+	BYTE tiny[5] = { 1, 2, 3, 4, 5 };
+
+	Entry entries[3] = {
+		{ "hero", g_blob, 1288 },
+		{ "perml00", tiny, sizeof(tiny) },
+		{ "game", noise, big },
+	};
+	const char *path = tmppath("multi.sv");
+	build_archive(path, entries, 3);
+
+	PkPlayerStruct edited = g_plain;
+	edited.pGold = 4321;
+	alignas(4) BYTE blob[1288];
+	encode_hero(&edited, blob);
+
+	char err[MPQ_ERR_LEN] = { 0 };
+	MpqReplacement both[2] = {
+		{ "hero", blob, 1288 },
+		{ "game", noise2, big + 300 },
+	};
+	ok(mpq_replace_files(path, both, 2, err), "hero and game replaced together");
+
+	MpqArchive *a = mpq_open(path, err);
+	ok(a != NULL, "reopens");
+	if (a != NULL) {
+		DWORD len = 0;
+		BYTE *got = mpq_read_file(a, "game", &len, err);
+		ok(got != NULL && len == big + 300 && memcmp(got, noise2, len) == 0,
+		    "game holds the new bytes, grown in place");
+		free(got);
+		got = mpq_read_file(a, "perml00", &len, err);
+		ok(got != NULL && len == sizeof(tiny) && memcmp(got, tiny, len) == 0,
+		    "the member between them is untouched");
+		free(got);
+		mpq_close(a);
+	}
+	PkPlayerStruct back;
+	ok(save_read_hero(path, &back, NULL, err) && back.pGold == 4321,
+	    "hero holds the edit");
+
+	/* One absent member refuses the whole set, with nothing written. */
+	uint64_t before = file_hash(path);
+	MpqReplacement partial[2] = {
+		{ "hero", g_blob, 1288 },
+		{ "nosuch", tiny, sizeof(tiny) },
+	};
+	ok(!mpq_replace_files(path, partial, 2, err),
+	    "a set with one absent member is refused");
+	printf("        %s\n", err);
+	ok(file_hash(path) == before, "...and the first member was not written either");
+	ok(count_temp_files() == 0, "no temporary files left behind");
+
+	MpqReplacement twice[2] = {
+		{ "hero", g_blob, 1288 },
+		{ "HERO", g_blob, 1288 },
+	};
+	ok(!mpq_replace_files(path, twice, 2, err),
+	    "naming the same member twice is refused");
+	ok(file_hash(path) == before, "...and nothing was written");
+
+	/* The character-level wrapper writes both in the same way. */
+	edited.pGold = 777;
+	ok(save_write_character(path, &edited, noise, big, err),
+	    "save_write_character writes hero and a saved game together");
+	ok(save_read_hero(path, &back, NULL, err) && back.pGold == 777,
+	    "...the hero half landed");
+	a = mpq_open(path, err);
+	if (a != NULL) {
+		DWORD len = 0;
+		BYTE *got = mpq_read_file(a, "game", &len, err);
+		DWORD dec = got != NULL ? codec_decode(got, len, SAVE_PASSWORD_SINGLE) : 0;
+		ok(dec == big && memcmp(got, noise, big) == 0,
+		    "...and so did the saved game, encoded for single player");
+		free(got);
+		mpq_close(a);
+	} else {
+		ok(0, "reopens after save_write_character");
+	}
+
+	free(noise);
+	free(noise2);
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -723,7 +839,7 @@ int main(void)
 		/* Run directly rather than through `make check`: keep scratch files
 		 * out of the source tree. */
 		g_tmpdir = "build/test-scratch";
-		mkdir(g_tmpdir, 0755);
+		test_mkdir(g_tmpdir);
 	}
 
 	printf("Devilution character editor -- Phase 3 MPQ writer\n");
@@ -738,6 +854,7 @@ int main(void)
 	check_tombstone();
 	check_failure_atomicity();
 	check_resize();
+	check_multi();
 	check_real_save();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);

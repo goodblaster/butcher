@@ -14,6 +14,8 @@
  * The two front ends share the library in src/ and neither invokes the other;
  * this file only chooses which one runs.
  */
+#include "compat/platform.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -44,6 +46,8 @@ bool IsVerb(const char *arg)
 
 int main(int argc, char **argv)
 {
+	plat_console_init();
+
 	if (argc < 2)
 		return tui_main(argc, argv); /* bare invocation browses saves */
 

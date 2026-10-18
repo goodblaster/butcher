@@ -1,0 +1,80 @@
+# Build and test on every push and pull request, on Linux, macOS and Windows.
+#
+# The suites build their own archives, so no game data is needed here -- the
+# real-save check (BUTCHER_SAVE=... make check) stays a local step, since a
+# save is someone's character and does not belong in a public runner.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: make check
+        run: make -j"$(nproc)" check
+      - name: make asan (address + undefined)
+        run: make -j"$(nproc)" asan
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: make check
+        run: make -j"$(sysctl -n hw.ncpu)" check
+      # Apple's ASan runtime is unreliable on recent macOS (see the Makefile),
+      # and Linux covers it; UBSan is what differs by platform here.
+      - name: make asan (undefined)
+        run: make -j"$(sysctl -n hw.ncpu)" asan SANITIZERS=undefined
+
+  # Native Windows, with MinGW-w64 under MSYS2. Nobody on the project has a
+  # Windows machine, so this job is the whole of butcher's Windows testing.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # Before checkout: CRLF line endings would break the Makefile's grep of
+      # FTXUI's CMakeLists, and with it the whole source list.
+      - name: keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: make mingw-w64-ucrt-x86_64-gcc
+      - name: make check
+        run: make -j"$(nproc)" check
+      - name: the binary starts and the manifest is in it
+        run: |
+          ./build/butcher.exe --help
+          ./build/butcher.exe list . || true
+          grep -c activeCodePage build/butcher.exe
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: make fuzz (libFuzzer, 60 s per harness)
+        run: make -j"$(nproc)" fuzz FUZZ_CXX=clang++ FUZZ_SECONDS=60
+      - name: keep any crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: build-fuzz/crash_*
+          if-no-files-found: ignore

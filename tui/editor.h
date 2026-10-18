@@ -12,6 +12,7 @@
 #ifndef BUTCHER_TUI_EDITOR_H
 #define BUTCHER_TUI_EDITOR_H
 
+#include "../src/compat/platform.h"
 #include "../src/saveutil.h"
 
 #include <string>
@@ -252,7 +253,7 @@ struct Editor {
 		 * leaves one character permanently unreachable. */
 		char clash[SAVE_PATH_MAX];
 		if (save_name_collides(entry.path, h.pName, clash, sizeof(clash))) {
-			const char *leaf = strrchr(clash, '/');
+			const char *leaf = plat_last_sep(clash);
 			snprintf(why, why_len,
 			    "%s already uses that name -- the game would only ever reach one "
 			    "of them",

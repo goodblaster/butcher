@@ -32,6 +32,8 @@
 
 #include <sys/stat.h>
 
+#include "../src/compat/platform.h"
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -52,7 +54,11 @@ std::string Pad(const std::string &s, size_t n)
 /** The last path component -- status lines have no room for a full path. */
 std::string Leaf(const std::string &path)
 {
+#ifdef _WIN32
+	size_t slash = path.find_last_of("/\\");
+#else
 	size_t slash = path.find_last_of('/');
+#endif
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
@@ -273,27 +279,42 @@ Element InventoryGrid(const PkPlayerStruct &h)
 	return vbox(rows);
 }
 
-} // namespace
-
 /* ------------------------------------------------------------------ */
-/* Main                                                                */
+/* Finding saves                                                       */
 /* ------------------------------------------------------------------ */
 
-/* Entry point when no subcommand is given; see butcher.cpp for dispatch. */
-int tui_main(int argc, char **argv)
-{
-	std::vector<SaveEntry> saves(SAVE_MAX_SLOTS);
+/** What the command line asked for, and the saves it led to. */
+struct Launch {
+	std::vector<SaveEntry> saves;
 	char used_dir[SAVE_PATH_MAX] = { 0 };
+	/*
+	 * Only naming a save file opens it directly. Pointing at a directory
+	 * means "show me what is here" -- jumping into whichever character
+	 * happened to sort first is the tool choosing for you, and with one save
+	 * in the folder it is not even obvious that it chose.
+	 */
+	bool named_one = false;
+	bool want_render = false;
+};
+
+/**
+ * Work out which saves to show.
+ * @return -1 to carry on into the interface, or the status to exit with.
+ */
+int FindSaves(int argc, char **argv, Launch *out)
+{
+	std::vector<SaveEntry> &saves = out->saves;
+	saves.resize(SAVE_MAX_SLOTS);
+	char *used_dir = out->used_dir;
 	int nsaves = 0;
-	int want_render = 0;
-	int want_saves = 0;
+	bool want_saves = false;
 	const char *arg = nullptr;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--render") == 0)
-			want_render = 1;
+			out->want_render = true;
 		else if (strcmp(argv[i], "--saves") == 0)
-			want_saves = 1;
+			want_saves = true;
 		/* Skip the value of a flag that takes one, or it is taken for the
 		 * path -- `--tab 1 saves/` used to open a directory named "1". */
 		else if (strcmp(argv[i], "--tab") == 0 || strcmp(argv[i], "--focus") == 0
@@ -305,16 +326,12 @@ int tui_main(int argc, char **argv)
 			arg = argv[i];
 	}
 
-	/* A named save opens directly; anything that scans a directory picks. */
-	int named_one = 0;
-
 	if (arg != nullptr) {
-		struct stat st;
-		if (stat(arg, &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (plat_is_dir(arg)) {
 			nsaves = save_scan_dir(arg, saves.data(), SAVE_MAX_SLOTS);
-			snprintf(used_dir, sizeof(used_dir), "%s", arg);
+			snprintf(used_dir, SAVE_PATH_MAX, "%s", arg);
 		} else {
-			named_one = 1;
+			out->named_one = true;
 			PkPlayerStruct h;
 			char err[MPQ_ERR_LEN];
 			if (!save_read_hero(arg, &h, nullptr, err)) {
@@ -367,7 +384,7 @@ int tui_main(int argc, char **argv)
 			printf("    butcher --help         every command\n");
 			return 0;
 		}
-		snprintf(used_dir, sizeof(used_dir), ".");
+		snprintf(used_dir, SAVE_PATH_MAX, ".");
 	}
 
 	if (nsaves == 0) {
@@ -377,16 +394,75 @@ int tui_main(int argc, char **argv)
 		return 1;
 	}
 	saves.resize(nsaves);
+	return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* The interface                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Both screens -- the picker and the character sheet -- and the keys that
+ * move between them.
+ *
+ * Every FTXUI component here binds to the address of a member, so a Tui is
+ * built in place and never copied or moved. Construction order matters for
+ * the same reason: `ed` holds a real character before any component that
+ * points into it exists.
+ */
+class Tui {
+public:
+	explicit Tui(Launch &launch);
+	Tui(const Tui &) = delete;
+	Tui &operator=(const Tui &) = delete;
+
+	/** --new, --tab, --rows and --focus: set the scene for --render. */
+	void ApplyFlags(int argc, char **argv);
+	/** Draw one frame to stdout. */
+	void RenderOnce();
+	void Loop();
+
+private:
+	/* ---- building ---- */
+	void BuildPicker();
+	void BuildAttributes();
+	void BuildSpells();
+	void BuildInventory();
+	void BuildSheet();
+
+	/* ---- drawing ---- */
+	Element DrawPicker();
+	Element DrawAttributes();
+	Element DrawSpells();
+	Element DrawInventory();
+	Element DrawSheet();
+
+	/* ---- keys ---- */
+	bool OnEvent(Event e);
+	bool OnConfirm(Event e);
+	bool OnPicker(Event e);
+	bool OnCreate(Event e);
+	bool OnSheet(Event e);
+	/** Ctrl+Y on the confirmation: write the character. */
+	void Save();
+	/** Return on the create form: make the character and open it. */
+	void Create();
+
+	/* ---- helpers ---- */
+	/** Load entry @p i onto the sheet and switch to it, cursor on the tab bar. */
+	void OpenSheet(int i);
+	void ReloadClasses();
+	void ReloadNewClasses();
+	HeroFlavor NewFlavor() const { return new_flavor == 1 ? FLAVOR_HELLFIRE : FLAVOR_DIABLO; }
+	static std::string PickerLine(const SaveEntry &s);
 
 	/* ---- shared state ---- */
+	std::vector<SaveEntry> &saves;
+	const char *used_dir;
+	bool named_one;
+
 	Editor ed;
-	/*
-	 * 0 picker, 1 sheet. Only naming a save file opens it directly. Pointing
-	 * at a directory means "show me what is here" -- jumping into whichever
-	 * character happened to sort first is the tool choosing for you, and with
-	 * one save in the folder it is not even obvious that it chose.
-	 */
-	int screen_index = named_one ? 1 : 0;
+	int screen_index; /* 0 picker, 1 sheet */
 	int picked = 0;
 	int tab_index = 0;
 	bool name_was_focused = false;
@@ -395,31 +471,10 @@ int tui_main(int argc, char **argv)
 	std::string status;
 	Color status_color = Color::GrayLight;
 
-	/*
-	 * Load unconditionally, even when the picker is shown first. The
-	 * components below bind to addresses inside `ed`, so it must hold a real
-	 * character before any of them exist.
-	 */
-	ed.Load(saves[0]);
-
-	/* ---- picker ---- */
+	/* ---- picker and the new-character form ---- */
 	std::vector<std::string> picker_items;
-	for (const auto &s : saves) {
-		/* The "!" marks a save whose character the game loads from "game"
-		 * rather than from the "hero" this edits. */
-		picker_items.push_back(std::string(s.in_progress ? "! " : "  ")
-		    + Pad(s.name, 18) + Pad(hero_flavor_name(s.flavor), 10)
-		    + Pad(hero_class_name(s.flavor, s.hero.pClass), 11) + "lvl "
-		    + Pad(std::to_string(s.hero.pLevel), 4) + Commas(s.hero.pGold) + " gold");
-	}
 	bool any_in_progress = false;
-	for (const auto &s2 : saves)
-		if (s2.in_progress)
-			any_in_progress = true;
-
-	auto picker_menu = Menu(&picker_items, &picked);
-
-	/* ---- new character, from the list screen ---- */
+	Component picker_menu;
 	bool creating = false;
 	int creating_tab = 0;
 	std::string new_name;
@@ -428,106 +483,190 @@ int tui_main(int argc, char **argv)
 	std::string new_error;
 	std::vector<std::string> flavor_names { "Diablo", "Hellfire" };
 	std::vector<std::string> new_class_names;
-
-	auto new_flavor_of = [&] { return new_flavor == 1 ? FLAVOR_HELLFIRE : FLAVOR_DIABLO; };
-	auto reload_new_classes = [&] {
-		new_class_names.clear();
-		for (int i = 0; i < hero_num_classes(new_flavor_of()); i++)
-			new_class_names.push_back(hero_class_name(new_flavor_of(), i));
-		/* Diablo has three; switching down from a Hellfire class must not
-		 * leave the selection past the end. */
-		if (new_class >= (int)new_class_names.size())
-			new_class = 0;
-	};
-	reload_new_classes();
-
 	int new_cursor = 0;
+	Component new_name_input, new_flavor_pick, new_class_pick, create_form;
+	Component picker;
+
+	/* ---- attributes pane ---- */
+	std::vector<std::string> class_names;
+	int name_cursor = 0;
+	Component name_input, name_field, class_pick;
+	Component slider_str, slider_mag, slider_dex, slider_vit, slider_pts, slider_lvl;
+	Component slider_hp, slider_hpmax, slider_mana, slider_manamax, slider_gold;
+	int cap_stat_pts = 255;
+	int cap_level = hero_max_level();
+	Component attrs_controls, attrs_pane;
+
+	/* ---- spells pane ---- */
+	std::vector<int> spell_ids;
+	std::vector<Component> spell_sliders;
+	int cap_spell = 15;
+	Component spell_controls, spells_pane;
+
+	/* ---- inventory pane ---- */
+	/* The last two are measured while drawing: how tall the pane came out,
+	 * and how much of it there was room for. */
+	int inv_scroll = 0;
+	int inv_rows = 0;
+	Box inv_view {};
+	Component inventory_pane;
+
+	/* ---- sheet ---- */
+	std::vector<std::string> tab_names = { "Attributes", "Spells", "Inventory" };
+	int tab_cursor = 0;
+	Component tab_bar, tab_body, sheet_container, sheet;
+
+	Component app;
+};
+
+Tui::Tui(Launch &launch)
+    : saves(launch.saves)
+    , used_dir(launch.used_dir)
+    , named_one(launch.named_one)
+    , screen_index(launch.named_one ? 1 : 0)
+{
+	/*
+	 * Load unconditionally, even when the picker is shown first. The
+	 * components below bind to addresses inside `ed`, so it must hold a real
+	 * character before any of them exist.
+	 */
+	ed.Load(saves[0]);
+
+	BuildPicker();
+	BuildAttributes();
+	BuildSpells();
+	BuildInventory();
+	BuildSheet();
+
+	auto root_container = Container::Tab({ picker, sheet }, &screen_index);
+	app = CatchEvent(root_container, [this](Event e) { return OnEvent(e); });
+}
+
+std::string Tui::PickerLine(const SaveEntry &s)
+{
+	/* The "!" marks a save whose character the game loads from "game"
+	 * rather than from the "hero" this edits. */
+	return std::string(s.in_progress ? "! " : "  ") + Pad(s.name, 18)
+	    + Pad(hero_flavor_name(s.flavor), 10)
+	    + Pad(hero_class_name(s.flavor, s.hero.pClass), 11) + "lvl "
+	    + Pad(std::to_string(s.hero.pLevel), 4) + Commas(s.hero.pGold) + " gold";
+}
+
+void Tui::ReloadNewClasses()
+{
+	new_class_names.clear();
+	for (int i = 0; i < hero_num_classes(NewFlavor()); i++)
+		new_class_names.push_back(hero_class_name(NewFlavor(), i));
+	/* Diablo has three; switching down from a Hellfire class must not
+	 * leave the selection past the end. */
+	if (new_class >= (int)new_class_names.size())
+		new_class = 0;
+}
+
+/* Rebuilt whenever a character is opened: Hellfire has six classes, Diablo
+ * three, and the list must match the save actually in front of you. */
+void Tui::ReloadClasses()
+{
+	class_names.clear();
+	for (int i = 0; i < hero_num_classes(ed.entry.flavor); i++)
+		class_names.push_back(hero_class_name(ed.entry.flavor, i));
+}
+
+/* ---- picker ---- */
+
+void Tui::BuildPicker()
+{
+	for (const auto &s : saves) {
+		picker_items.push_back(PickerLine(s));
+		if (s.in_progress)
+			any_in_progress = true;
+	}
+	picker_menu = Menu(&picker_items, &picked);
+
+	ReloadNewClasses();
 	InputOption new_name_opt = InputOption::Default();
 	new_name_opt.multiline = false;
 	new_name_opt.cursor_position = &new_cursor;
-	new_name_opt.on_change = [&] { new_name = editor_sanitize_name(new_name); };
-	auto new_name_input = Input(&new_name, "name", new_name_opt);
-	auto new_flavor_pick = Radiobox(&flavor_names, &new_flavor);
-	auto new_class_pick = Radiobox(&new_class_names, &new_class);
+	new_name_opt.on_change = [this] { new_name = editor_sanitize_name(new_name); };
+	new_name_input = Input(&new_name, "name", new_name_opt);
+	new_flavor_pick = Radiobox(&flavor_names, &new_flavor);
+	new_class_pick = Radiobox(&new_class_names, &new_class);
 
-	auto create_form = Container::Vertical({
+	create_form = Container::Vertical({
 	    NavEscape(new_name_input),
 	    new_flavor_pick,
 	    new_class_pick,
 	});
 
 	auto picker_body = Container::Tab({ picker_menu, create_form }, &creating_tab);
+	picker = Renderer(picker_body, [this] { return DrawPicker(); });
+}
 
-	auto picker = Renderer(picker_body, [&] {
-		Element list_body = vbox({
-		                   text(" butcher ") | bold,
-		                   text(std::string(" ") + used_dir) | dim,
-		                   separator(),
-		                   picker_menu->Render() | frame | flex,
-		                   separator(),
-		                   any_in_progress
-		                       ? text(" ! has a game in progress; edits are applied "
-		                              "to the saved game too ")
-		                           | color(Color::Cyan)
-		                       : text(""),
-		                   text(" ↑↓ choose · enter open · n new · q quit ") | dim,
-		               });
-		Element list = Windowed(list_body, kPickerMinRows) | border;
+Element Tui::DrawPicker()
+{
+	Element list_body = vbox({
+	                   text(" butcher ") | bold,
+	                   text(std::string(" ") + used_dir) | dim,
+	                   separator(),
+	                   picker_menu->Render() | frame | flex,
+	                   separator(),
+	                   any_in_progress
+	                       ? text(" ! has a game in progress; edits are applied "
+	                              "to the saved game too ")
+	                           | color(Color::Cyan)
+	                       : text(""),
+	                   text(" ↑↓ choose · enter open · n new · q quit ") | dim,
+	               });
+	Element list = Windowed(list_body, kPickerMinRows) | border;
 
-		if (!creating)
-			return list;
+	if (!creating)
+		return list;
 
-		reload_new_classes();
-		Element form = vbox({
-		                   text(" New character ") | bold,
-		                   separator(),
-		                   hbox({ text("  Name   "), new_name_input->Render() | flex }),
-		                   hbox({ text("  Game   "), new_flavor_pick->Render() }),
-		                   hbox({ text("  Class  "), new_class_pick->Render() }),
-		                   separator(),
-		                   text("  no equipment -- the game builds starting gear")
-		                       | dim,
-		                   text("  from item seeds, which cannot be made here.")
-		                       | dim,
-		                   text("  give it gold on the sheet and buy some.") | dim,
-		                   new_error.empty()
-		                       ? text("")
-		                       : paragraph("  " + new_error) | color(Color::Red),
-		                   separator(),
-		                   text(" enter create · esc cancel ") | dim,
-		               })
-		    | border | bgcolor(Color::Black);
-		return dbox({ list, form | center });
-	});
+	ReloadNewClasses();
+	Element form = vbox({
+	                   text(" New character ") | bold,
+	                   separator(),
+	                   hbox({ text("  Name   "), new_name_input->Render() | flex }),
+	                   hbox({ text("  Game   "), new_flavor_pick->Render() }),
+	                   hbox({ text("  Class  "), new_class_pick->Render() }),
+	                   separator(),
+	                   text("  no equipment -- the game builds starting gear")
+	                       | dim,
+	                   text("  from item seeds, which cannot be made here.")
+	                       | dim,
+	                   text("  give it gold on the sheet and buy some.") | dim,
+	                   new_error.empty()
+	                       ? text("")
+	                       : paragraph("  " + new_error) | color(Color::Red),
+	                   separator(),
+	                   text(" enter create · esc cancel ") | dim,
+	               })
+	    | border | bgcolor(Color::Black);
+	return dbox({ list, form | center });
+}
 
-	/* ---- attributes pane ---- */
-	std::vector<std::string> class_names;
-	/* Rebuilt whenever a character is opened: Hellfire has six classes, Diablo
-	 * three, and the list must match the save actually in front of you. */
-	auto reload_classes = [&] {
-		class_names.clear();
-		for (int i = 0; i < hero_num_classes(ed.entry.flavor); i++)
-			class_names.push_back(hero_class_name(ed.entry.flavor, i));
-	};
-	reload_classes();
+/* ---- attributes pane ---- */
+
+void Tui::BuildAttributes()
+{
+	ReloadClasses();
 
 	/*
 	 * Single line, and sanitised as it is typed. The UI should not accept
 	 * something validation will then reject: Return used to insert a newline,
 	 * and hero_name_valid refuses control characters.
 	 */
-	int name_cursor = 0;
 	InputOption name_opt = InputOption::Default();
 	name_opt.multiline = false;
 	name_opt.cursor_position = &name_cursor;
-	name_opt.on_change = [&] {
+	name_opt.on_change = [this] {
 		std::string clean = editor_sanitize_name(ed.name);
 		if (clean != ed.name)
 			ed.name = clean;
 	};
-	auto name_input = Input(&ed.name, "name", name_opt);
+	name_input = Input(&ed.name, "name", name_opt);
 	/* Ctrl+U clears the field, so a name can be replaced rather than edited. */
-	auto name_field = NavEscape(CatchEvent(name_input, [&](Event e) {
+	name_field = NavEscape(CatchEvent(name_input, [this](Event e) {
 		if (e == Event::CtrlU) {
 			ed.name.clear();
 			name_cursor = 0;
@@ -535,14 +674,13 @@ int tui_main(int argc, char **argv)
 		}
 		return false;
 	}));
-	auto class_pick = Radiobox(&class_names, &ed.cls);
+	class_pick = Radiobox(&class_names, &ed.cls);
 
-	auto slider_str = Slider(SliderOption<int> { &ed.str, 0, &ed.cap_str, 1 });
-	auto slider_mag = Slider(SliderOption<int> { &ed.mag, 0, &ed.cap_mag, 1 });
-	auto slider_dex = Slider(SliderOption<int> { &ed.dex, 0, &ed.cap_dex, 1 });
-	auto slider_vit = Slider(SliderOption<int> { &ed.vit, 0, &ed.cap_vit, 1 });
-	int cap_stat_pts = 255, cap_level = hero_max_level();
-	auto slider_pts = Slider(SliderOption<int> { &ed.statpts, 0, &cap_stat_pts, 1 });
+	slider_str = Slider(SliderOption<int> { &ed.str, 0, &ed.cap_str, 1 });
+	slider_mag = Slider(SliderOption<int> { &ed.mag, 0, &ed.cap_mag, 1 });
+	slider_dex = Slider(SliderOption<int> { &ed.dex, 0, &ed.cap_dex, 1 });
+	slider_vit = Slider(SliderOption<int> { &ed.vit, 0, &ed.cap_vit, 1 });
+	slider_pts = Slider(SliderOption<int> { &ed.statpts, 0, &cap_stat_pts, 1 });
 	/*
 	 * The floor is the stored level: the game never takes a level back, so
 	 * offering to lower one would promise something it cannot do. on_change
@@ -550,12 +688,12 @@ int tui_main(int argc, char **argv)
 	 */
 	SliderOption<int> lvl_opt { &ed.level_target, 1, &cap_level, 1 };
 	lvl_opt.min = &ed.level_stored;
-	lvl_opt.on_change = [&ed] { ed.ApplyLevelTarget(); };
-	auto slider_lvl = Slider(lvl_opt);
-	auto slider_hp = Slider(SliderOption<int> { &ed.hp, 1, &ed.hp_max, 1 });
-	auto slider_hpmax = Slider(SliderOption<int> { &ed.hp_max, 1, &ed.cap_life, 1 });
-	auto slider_mana = Slider(SliderOption<int> { &ed.mana, 0, &ed.mana_max, 1 });
-	auto slider_manamax = Slider(SliderOption<int> { &ed.mana_max, 0, &ed.cap_mana, 1 });
+	lvl_opt.on_change = [this] { ed.ApplyLevelTarget(); };
+	slider_lvl = Slider(lvl_opt);
+	slider_hp = Slider(SliderOption<int> { &ed.hp, 1, &ed.hp_max, 1 });
+	slider_hpmax = Slider(SliderOption<int> { &ed.hp_max, 1, &ed.cap_life, 1 });
+	slider_mana = Slider(SliderOption<int> { &ed.mana, 0, &ed.mana_max, 1 });
+	slider_manamax = Slider(SliderOption<int> { &ed.mana_max, 0, &ed.cap_mana, 1 });
 	/*
 	 * Gold moves a pile at a time. A step of 100 meant dozens of presses to
 	 * reach a useful figure and landed on totals like 2,654 that no character
@@ -565,14 +703,14 @@ int tui_main(int argc, char **argv)
 	 */
 	static const int kGoldStep = 5000;
 	SliderOption<int> gold_opt { &ed.gold, 0, &ed.cap_gold, kGoldStep };
-	gold_opt.on_change = [&ed] {
+	gold_opt.on_change = [this] {
 		int snapped = ed.gold - (ed.gold % kGoldStep);
 		/* Never snap a non-zero amount away to nothing. */
 		ed.gold = (snapped == 0 && ed.gold > 0) ? kGoldStep : snapped;
 		if (ed.gold > ed.cap_gold)
 			ed.gold = ed.cap_gold;
 	};
-	auto slider_gold = Slider(gold_opt);
+	slider_gold = Slider(gold_opt);
 	/*
 	 * There is no dungeon slider. plrlevel is a record of where the character
 	 * was, not an instruction about where to start: SetupLocalCoords does
@@ -581,7 +719,7 @@ int tui_main(int argc, char **argv)
 	 * the saved game instead. It is shown below, and left alone.
 	 */
 
-	auto attrs_controls = Container::Vertical({
+	attrs_controls = Container::Vertical({
 	    name_field,
 	    class_pick,
 	    slider_str,
@@ -597,122 +735,129 @@ int tui_main(int argc, char **argv)
 	    slider_gold,
 	});
 
-	auto attrs_pane = Renderer(attrs_controls, [&] {
-		ed.RefreshCaps();
-		PkPlayerStruct h = ed.Compose();
+	attrs_pane = Renderer(attrs_controls, [this] { return DrawAttributes(); });
+}
 
-		std::vector<Element> rows;
-		{
-			/*
-			 * Sized to what a name can hold rather than flexed across the row,
-			 * so the highlight is the field and not the whole line.
-			 */
-			bool on_name = name_input->Focused();
-			if (on_name && !name_was_focused)
-				name_cursor = (int)ed.name.size(); /* arrive at the end, not the left */
-			name_was_focused = on_name;
+Element Tui::DrawAttributes()
+{
+	ed.RefreshCaps();
+	PkPlayerStruct h = ed.Compose();
 
-			Element field = name_input->Render()
-			    | size(WIDTH, EQUAL, PLR_NAME_LEN);
-			rows.push_back(MarkRow(on_name,
-			    hbox({
-			        text(Pad("Name", 11)),
-			        on_name ? (field | underlined | color(Color::White))
-			                : (field | dim),
-			        filler(),
-			        text(on_name ? "  ^U clears" : "") | dim,
-			    }),
-			    /*owns_cursor=*/true));
-		}
-		rows.push_back(MarkRow(class_pick->Focused(),
+	std::vector<Element> rows;
+	{
+		/*
+		 * Sized to what a name can hold rather than flexed across the row,
+		 * so the highlight is the field and not the whole line.
+		 */
+		bool on_name = name_input->Focused();
+		if (on_name && !name_was_focused)
+			name_cursor = (int)ed.name.size(); /* arrive at the end, not the left */
+		name_was_focused = on_name;
+
+		Element field = name_input->Render()
+		    | size(WIDTH, EQUAL, PLR_NAME_LEN);
+		rows.push_back(MarkRow(on_name,
 		    hbox({
-		        text(Pad("Class", 11)),
-		        class_pick->Render() | flex,
-		    })));
-		rows.push_back(separator());
-		rows.push_back(StatRow("Strength", ed.str, ed.cap_str, slider_str));
-		rows.push_back(StatRow("Magic", ed.mag, ed.cap_mag, slider_mag));
-		rows.push_back(StatRow("Dexterity", ed.dex, ed.cap_dex, slider_dex));
-		rows.push_back(StatRow("Vitality", ed.vit, ed.cap_vit, slider_vit));
-		rows.push_back(StatRow("Unspent", ed.statpts, cap_stat_pts, slider_pts));
-		rows.push_back(separator());
-		rows.push_back(StatRow("Level", ed.level_target, cap_level, slider_lvl));
+		        text(Pad("Name", 11)),
+		        on_name ? (field | underlined | color(Color::White))
+		                : (field | dim),
+		        filler(),
+		        text(on_name ? "  ^U clears" : "") | dim,
+		    }),
+		    /*owns_cursor=*/true));
+	}
+	rows.push_back(MarkRow(class_pick->Focused(),
+	    hbox({
+	        text(Pad("Class", 11)),
+	        class_pick->Render() | flex,
+	    })));
+	rows.push_back(separator());
+	rows.push_back(StatRow("Strength", ed.str, ed.cap_str, slider_str));
+	rows.push_back(StatRow("Magic", ed.mag, ed.cap_mag, slider_mag));
+	rows.push_back(StatRow("Dexterity", ed.dex, ed.cap_dex, slider_dex));
+	rows.push_back(StatRow("Vitality", ed.vit, ed.cap_vit, slider_vit));
+	rows.push_back(StatRow("Unspent", ed.statpts, cap_stat_pts, slider_pts));
+	rows.push_back(separator());
+	rows.push_back(StatRow("Level", ed.level_target, cap_level, slider_lvl));
 
-		std::string exp_line = "  " + Pad("Experience", 11) + Commas(h.pExperience);
-		if (h.pExperience != ed.original.pExperience)
-			exp_line = "  " + Pad("Experience", 11) + Commas(ed.original.pExperience)
-			    + " -> " + Commas(h.pExperience);
-		rows.push_back(text(exp_line));
+	std::string exp_line = "  " + Pad("Experience", 11) + Commas(h.pExperience);
+	if (h.pExperience != ed.original.pExperience)
+		exp_line = "  " + Pad("Experience", 11) + Commas(ed.original.pExperience)
+		    + " -> " + Commas(h.pExperience);
+	rows.push_back(text(exp_line));
 
-		/*
-		 * Levelling is applied outright, so the note reports what was granted
-		 * rather than what is pending. It used to promise the game would award
-		 * the levels on the next kill; it never would -- ValidatePlayer clamps
-		 * experience back down every tick.
-		 */
-		int gained = ed.level_target - ed.level_stored;
-		if (gained > 0) {
-			int hp_per = (ed.cls == PC_SORCERER ? 64 : 128) + 1;
-			int mana_per = (ed.cls == PC_WARRIOR ? 64 : ed.cls == 5 ? 0 : 128) + 1;
-			rows.push_back(text("   └ levels " + std::to_string(ed.level_stored + 1)
-			                  + "-" + std::to_string(ed.level_target) + " granted: +"
-			                  + std::to_string(ed.statpts) + " pts, +"
-			                  + std::to_string((gained * hp_per) >> HERO_FIXED_SHIFT)
-			                  + " life, +"
-			                  + std::to_string((gained * mana_per) >> HERO_FIXED_SHIFT)
-			                  + " mana")
-			    | color(Color::Cyan));
-		}
+	/*
+	 * Levelling is applied outright, so the note reports what was granted
+	 * rather than what is pending. It used to promise the game would award
+	 * the levels on the next kill; it never would -- ValidatePlayer clamps
+	 * experience back down every tick.
+	 */
+	int gained = ed.level_target - ed.level_stored;
+	if (gained > 0) {
+		int hp_per = (ed.cls == PC_SORCERER ? 64 : 128) + 1;
+		int mana_per = (ed.cls == PC_WARRIOR ? 64 : ed.cls == 5 ? 0 : 128) + 1;
+		rows.push_back(text("   └ levels " + std::to_string(ed.level_stored + 1)
+		                  + "-" + std::to_string(ed.level_target) + " granted: +"
+		                  + std::to_string(ed.statpts) + " pts, +"
+		                  + std::to_string((gained * hp_per) >> HERO_FIXED_SHIFT)
+		                  + " life, +"
+		                  + std::to_string((gained * mana_per) >> HERO_FIXED_SHIFT)
+		                  + " mana")
+		    | color(Color::Cyan));
+	}
 
-		rows.push_back(separator());
-		rows.push_back(StatRow("Life", ed.hp, ed.hp_max, slider_hp));
-		rows.push_back(StatRow("Life max", ed.hp_max, ed.cap_life, slider_hpmax));
-		rows.push_back(StatRow("Mana", ed.mana, ed.mana_max, slider_mana));
-		rows.push_back(StatRow("Mana max", ed.mana_max, ed.cap_mana, slider_manamax));
-		rows.push_back(separator());
-		rows.push_back(MarkRow(slider_gold->Focused(),
-		    hbox({
-		        text(Pad("Gold", 11)),
-		        text(Pad(Commas(ed.gold), 10)) | color(Color::Yellow),
-		        slider_gold->Render() | flex,
-		        text("  0-" + Commas(ed.cap_gold)) | dim,
-		    })));
-		/* A Hellfire pile holds twice a Diablo one, so this cannot be a
-		 * constant -- it read "at most 5,000" on a Hellfire character. */
-		int stack_max = hero_gold_stack_max(ed.entry.flavor, &h);
-		int nstacks = (ed.gold + stack_max - 1) / stack_max;
-		rows.push_back(text("   └ " + std::to_string(nstacks)
-		                  + (nstacks == 1 ? " stack of at most " : " stacks of at most ")
-		                  + Commas(stack_max)
-		                  + ", " + std::to_string(hero_free_inv_cells(&h))
-		                  + " cells free")
-		    | dim);
-		/*
-		 * Reported, not offered. This was a slider until it turned out the
-		 * game never reads it: setting it to 5 and loading still started the
-		 * character in town. It is still worth showing -- it says whether the
-		 * character is standing in a dungeon -- so it stays as a line.
-		 */
-		rows.push_back(separator());
-		rows.push_back(hbox({
-		    text("  " + Pad("Dungeon", 11)),
-		    text(ed.dlvl == 0 ? "town" : std::to_string(ed.dlvl)),
-		}));
-		rows.push_back(text("   └ where the save says the character is; the game "
-		                    "decides this on load")
-		    | dim);
+	rows.push_back(separator());
+	rows.push_back(StatRow("Life", ed.hp, ed.hp_max, slider_hp));
+	rows.push_back(StatRow("Life max", ed.hp_max, ed.cap_life, slider_hpmax));
+	rows.push_back(StatRow("Mana", ed.mana, ed.mana_max, slider_mana));
+	rows.push_back(StatRow("Mana max", ed.mana_max, ed.cap_mana, slider_manamax));
+	rows.push_back(separator());
+	rows.push_back(MarkRow(slider_gold->Focused(),
+	    hbox({
+	        text(Pad("Gold", 11)),
+	        text(Pad(Commas(ed.gold), 10)) | color(Color::Yellow),
+	        slider_gold->Render() | flex,
+	        text("  0-" + Commas(ed.cap_gold)) | dim,
+	    })));
+	/* A Hellfire pile holds twice a Diablo one, so this cannot be a
+	 * constant -- it read "at most 5,000" on a Hellfire character. */
+	int stack_max = hero_gold_stack_max(ed.entry.flavor, &h);
+	int nstacks = (ed.gold + stack_max - 1) / stack_max;
+	rows.push_back(text("   └ " + std::to_string(nstacks)
+	                  + (nstacks == 1 ? " stack of at most " : " stacks of at most ")
+	                  + Commas(stack_max)
+	                  + ", " + std::to_string(hero_free_inv_cells(&h))
+	                  + " cells free")
+	    | dim);
+	/*
+	 * Reported, not offered. This was a slider until it turned out the
+	 * game never reads it: setting it to 5 and loading still started the
+	 * character in town. It is still worth showing -- it says whether the
+	 * character is standing in a dungeon -- so it stays as a line.
+	 */
+	rows.push_back(separator());
+	rows.push_back(hbox({
+	    text("  " + Pad("Dungeon", 11)),
+	    text(ed.dlvl == 0 ? "town" : std::to_string(ed.dlvl)),
+	}));
+	rows.push_back(text("   └ where the save says the character is; the game "
+	                    "decides this on load")
+	    | dim);
 
-		/*
-		 * Scrolled, not squeezed. This is the only `flex` child of the sheet,
-		 * so it is the first thing a short window takes room from, and without
-		 * a frame it lost rows from the middle of the list -- Gold and Dungeon
-		 * were simply absent, with nothing to say they existed. MarkRow puts
-		 * `focus` on the cursor row, which is what the frame scrolls to.
-		 */
-		return vbox(rows) | vscroll_indicator | yframe;
-	});
+	/*
+	 * Scrolled, not squeezed. This is the only `flex` child of the sheet,
+	 * so it is the first thing a short window takes room from, and without
+	 * a frame it lost rows from the middle of the list -- Gold and Dungeon
+	 * were simply absent, with nothing to say they existed. MarkRow puts
+	 * `focus` on the cursor row, which is what the frame scrolls to.
+	 */
+	return vbox(rows) | vscroll_indicator | yframe;
+}
 
-	/* ---- spells pane ---- */
+/* ---- spells pane ---- */
+
+void Tui::BuildSpells()
+{
 	/*
 	 * Every id either game names, so the component set is fixed for the life
 	 * of the program. Rows the current flavour does not define are wrapped in
@@ -720,15 +865,12 @@ int tui_main(int argc, char **argv)
 	 * render time alone left them reachable, which is how a Hellfire spell got
 	 * toggled into a Diablo save and made the character unloadable.
 	 */
-	std::vector<int> spell_ids;
 	for (int s = 1; s < hero_spell_persisted(); s++)
 		if (hero_spell_name(FLAVOR_DIABLO, s) != nullptr
 		    || hero_spell_name(FLAVOR_HELLFIRE, s) != nullptr)
 			spell_ids.push_back(s);
 
-	auto spell_controls = Container::Vertical({});
-	std::vector<Component> spell_sliders;
-	static int cap_spell = 15;
+	spell_controls = Container::Vertical({});
 	for (size_t i = 0; i < spell_ids.size(); i++) {
 		int s = spell_ids[i];
 		/*
@@ -742,7 +884,7 @@ int tui_main(int argc, char **argv)
 		SliderOption<int> opt { &ed.spell_lvl[s], 0, &cap_spell, 1 };
 		opt.color_active = Color::Cyan;
 		opt.color_inactive = Color::GrayLight; /* legible when not focused */
-		auto row = CatchEvent(Slider(opt), [&, s](Event e) {
+		auto row = CatchEvent(Slider(opt), [this, s](Event e) {
 			if (e == Event::Character(' ') || e == Event::Return) {
 				/*
 				 * Spells with no book are granted by the class; the game masks
@@ -766,122 +908,62 @@ int tui_main(int argc, char **argv)
 		});
 		spell_sliders.push_back(row);
 		spell_controls->Add(
-		    Maybe(row, [&ed, s] { return hero_spell_exists(ed.entry.flavor, s) != 0; }));
+		    Maybe(row, [this, s] { return hero_spell_exists(ed.entry.flavor, s) != 0; }));
 	}
 
-	auto spells_pane = Renderer(spell_controls, [&] {
-		std::vector<Element> rows;
-		rows.push_back(hbox({
-		                   text("   "),                /* marker + glyph */
-		                   text(" " + Pad("spell", 18)),
-		                   text(Pad("level", 4)),
-		               })
-		    | dim);
-		rows.push_back(text("   space toggles the spell book; \u00b7 marks a spell "
-		                    "that has none") 
-		    | dim);
-		rows.push_back(separator());
-		for (size_t i = 0; i < spell_ids.size(); i++) {
-			int s = spell_ids[i];
-			if (!hero_spell_exists(ed.entry.flavor, s))
-				continue; /* not a spell in this game */
-			const char *nm = hero_spell_name(ed.entry.flavor, s);
-			bool book = hero_spell_has_book(ed.entry.flavor, s) != 0;
-			bool active = ed.spell_known[s] || ed.spell_lvl[s] > 0;
-			bool here = spell_sliders[i]->Focused();
-			/* A class skill has no book, so it gets no checkbox to toggle. */
-			Element mark = book ? text(ed.spell_known[s] ? "▣" : "☐")
-			        | color(ed.spell_known[s] ? Color::Green : Color::GrayDark)
-			                    : text("·") | color(Color::GrayDark);
-			Element row = hbox({
-			                  mark,
-			                  text(" " + Pad(nm ? nm : "?", 18)),
-			                  text(Pad(std::to_string(ed.spell_lvl[s]), 4)),
-			                  spell_sliders[i]->Render() | flex,
-			              })
-			    | (active || here ? nothing : dim);
-			rows.push_back(MarkRow(here, row));
-		}
-		/* Height only: a horizontal frame would pan the label out of view to
-		 * keep a slider at full length, which is the wrong trade. */
-		return vbox(rows) | vscroll_indicator | yframe;
-	});
+	spells_pane = Renderer(spell_controls, [this] { return DrawSpells(); });
+}
 
-	/* ---- inventory pane (read only) ---- */
+Element Tui::DrawSpells()
+{
+	std::vector<Element> rows;
+	rows.push_back(hbox({
+	                   text("   "),                /* marker + glyph */
+	                   text(" " + Pad("spell", 18)),
+	                   text(Pad("level", 4)),
+	               })
+	    | dim);
+	rows.push_back(text("   space toggles the spell book; · marks a spell "
+	                    "that has none")
+	    | dim);
+	rows.push_back(separator());
+	for (size_t i = 0; i < spell_ids.size(); i++) {
+		int s = spell_ids[i];
+		if (!hero_spell_exists(ed.entry.flavor, s))
+			continue; /* not a spell in this game */
+		const char *nm = hero_spell_name(ed.entry.flavor, s);
+		bool book = hero_spell_has_book(ed.entry.flavor, s) != 0;
+		bool active = ed.spell_known[s] || ed.spell_lvl[s] > 0;
+		bool here = spell_sliders[i]->Focused();
+		/* A class skill has no book, so it gets no checkbox to toggle. */
+		Element mark = book ? text(ed.spell_known[s] ? "▣" : "☐")
+		        | color(ed.spell_known[s] ? Color::Green : Color::GrayDark)
+		                    : text("·") | color(Color::GrayDark);
+		Element row = hbox({
+		                  mark,
+		                  text(" " + Pad(nm ? nm : "?", 18)),
+		                  text(Pad(std::to_string(ed.spell_lvl[s]), 4)),
+		                  spell_sliders[i]->Render() | flex,
+		              })
+		    | (active || here ? nothing : dim);
+		rows.push_back(MarkRow(here, row));
+	}
+	/* Height only: a horizontal frame would pan the label out of view to
+	 * keep a slider at full length, which is the wrong trade. */
+	return vbox(rows) | vscroll_indicator | yframe;
+}
+
+/* ---- inventory pane (read only) ---- */
+
+void Tui::BuildInventory()
+{
 	/*
 	 * Focusable even though it holds no controls. A Renderer with no children
 	 * is not, which made the whole tab body unfocusable while Inventory was
 	 * selected -- so an arrow press there moved focus up to the tab bar and
 	 * left the panes with nothing focused.
 	 */
-	/* The last two are measured while rendering: how tall the pane came out,
-	 * and how much of it there was room for. */
-	int inv_scroll = 0;
-	int inv_rows = 0;
-	Box inv_view {};
-	auto inventory_view = Renderer([&](bool) {
-		PkPlayerStruct h = ed.Compose();
-		std::vector<Element> left;
-		left.push_back(text(" Equipped") | bold);
-		static const char *slots[NUM_INVLOC] = { "head", "left ring", "right ring",
-			"amulet", "left hand", "right hand", "chest" };
-		for (int i = 0; i < NUM_INVLOC; i++) {
-			const PkItemStruct &it = h.InvBody[i];
-			std::string what = "-";
-			if (it.idx != 0xFFFF) {
-				const char *nm = format_item_name(ed.entry.flavor, it.idx);
-				what = nm ? nm : "unknown";
-			}
-			left.push_back(text("  " + Pad(slots[i], 12) + what));
-		}
-
-		std::vector<Element> right;
-		right.push_back(text(" Inventory") | bold);
-		right.push_back(InventoryGrid(h));
-		right.push_back(text(""));
-		int shown = 0;
-		for (int i = 0; i < h._pNumInv && i < NUM_INV_GRID_ELEM && shown < 12; i++) {
-			const PkItemStruct &it = h.InvList[i];
-			if (it.idx == 0xFFFF)
-				continue;
-			std::string what = it.idx == IDI_GOLD
-			    ? Commas(it.wValue) + " gold"
-			    : std::string(format_item_name(ed.entry.flavor, it.idx)
-			              ? format_item_name(ed.entry.flavor, it.idx)
-			              : "unknown");
-			right.push_back(text("  " + Pad(std::to_string(i + 1) + ".", 4) + what));
-			shown++;
-		}
-
-		/*
-		 * A column of empty rows, one per line of the pane, carrying `focus`
-		 * at the scroll position. Nothing here is a widget and the two
-		 * columns are different lengths, so the frame has nothing of its own
-		 * to scroll to; this gives it a mark that does not depend on which
-		 * column is longer, and costs no width -- an empty text is zero
-		 * columns wide. It goes first, because an hbox keeps the first mark
-		 * it is handed, and it spans the note at the foot as well, or the
-		 * last rows could not be scrolled to.
-		 */
-		int rows = std::max((int)left.size(), 1 + 4 + 1 + shown) + 2;
-		std::vector<Element> ruler;
-		for (int i = 0; i < rows; i++)
-			ruler.push_back(i == inv_scroll ? text("") | focus : text(""));
-		inv_rows = rows;
-
-		return hbox({
-		           vbox(ruler),
-		           vbox({
-		               hbox({ vbox(left) | flex, separator(), vbox(right) | flex }),
-		               separator(),
-		               text("  items are generated from a seed and cannot be "
-		                    "edited; shown for reference")
-		                   | dim,
-		           })
-		               | flex,
-		       })
-		    | vscroll_indicator | yframe | reflect(inv_view);
-	});
+	auto inventory_view = Renderer([this](bool) { return DrawInventory(); });
 
 	/*
 	 * Arrows scroll the pane. Each is taken only when it has somewhere to go:
@@ -889,7 +971,7 @@ int tui_main(int argc, char **argv)
 	 * pane handled nothing, and when the whole inventory already fits neither
 	 * key is swallowed -- a cursor with no visible effect reads as a dead key.
 	 */
-	auto inventory_pane = CatchEvent(inventory_view, [&](Event e) {
+	inventory_pane = CatchEvent(inventory_view, [this](Event e) {
 		int max_scroll = inv_rows - (inv_view.y_max - inv_view.y_min + 1);
 		if (max_scroll < 0)
 			max_scroll = 0;
@@ -905,9 +987,77 @@ int tui_main(int argc, char **argv)
 		}
 		return false;
 	});
+}
 
-	/* ---- sheet ---- */
-	std::vector<std::string> tab_names = { "Attributes", "Spells", "Inventory" };
+Element Tui::DrawInventory()
+{
+	PkPlayerStruct h = ed.Compose();
+	std::vector<Element> left;
+	left.push_back(text(" Equipped") | bold);
+	static const char *slots[NUM_INVLOC] = { "head", "left ring", "right ring",
+		"amulet", "left hand", "right hand", "chest" };
+	for (int i = 0; i < NUM_INVLOC; i++) {
+		const PkItemStruct &it = h.InvBody[i];
+		std::string what = "-";
+		if (it.idx != 0xFFFF) {
+			const char *nm = format_item_name(ed.entry.flavor, it.idx);
+			what = nm ? nm : "unknown";
+		}
+		left.push_back(text("  " + Pad(slots[i], 12) + what));
+	}
+
+	std::vector<Element> right;
+	right.push_back(text(" Inventory") | bold);
+	right.push_back(InventoryGrid(h));
+	right.push_back(text(""));
+	int shown = 0;
+	for (int i = 0; i < h._pNumInv && i < NUM_INV_GRID_ELEM && shown < 12; i++) {
+		const PkItemStruct &it = h.InvList[i];
+		if (it.idx == 0xFFFF)
+			continue;
+		std::string what = it.idx == IDI_GOLD
+		    ? Commas(it.wValue) + " gold"
+		    : std::string(format_item_name(ed.entry.flavor, it.idx)
+		              ? format_item_name(ed.entry.flavor, it.idx)
+		              : "unknown");
+		right.push_back(text("  " + Pad(std::to_string(i + 1) + ".", 4) + what));
+		shown++;
+	}
+
+	/*
+	 * A column of empty rows, one per line of the pane, carrying `focus`
+	 * at the scroll position. Nothing here is a widget and the two
+	 * columns are different lengths, so the frame has nothing of its own
+	 * to scroll to; this gives it a mark that does not depend on which
+	 * column is longer, and costs no width -- an empty text is zero
+	 * columns wide. It goes first, because an hbox keeps the first mark
+	 * it is handed, and it spans the note at the foot as well, or the
+	 * last rows could not be scrolled to.
+	 */
+	int rows = std::max((int)left.size(), 1 + 4 + 1 + shown) + 2;
+	std::vector<Element> ruler;
+	for (int i = 0; i < rows; i++)
+		ruler.push_back(i == inv_scroll ? text("") | focus : text(""));
+	inv_rows = rows;
+
+	return hbox({
+	           vbox(ruler),
+	           vbox({
+	               hbox({ vbox(left) | flex, separator(), vbox(right) | flex }),
+	               separator(),
+	               text("  items are generated from a seed and cannot be "
+	                    "edited; shown for reference")
+	                   | dim,
+	           })
+	               | flex,
+	       })
+	    | vscroll_indicator | yframe | reflect(inv_view);
+}
+
+/* ---- sheet ---- */
+
+void Tui::BuildSheet()
+{
 	/*
 	 * A Menu tracks two positions: which entry is selected, and where its own
 	 * cursor sits. Toggle(&names, &index) only exposes the first, so changing
@@ -915,327 +1065,354 @@ int tui_main(int argc, char **argv)
 	 * cursor behind -- the bar then showed one tab bold and a different one
 	 * reversed. Binding both means they cannot disagree.
 	 */
-	int tab_cursor = 0;
 	MenuOption tab_opt = MenuOption::Toggle();
 	tab_opt.entries = &tab_names;
 	tab_opt.selected = &tab_index;
 	tab_opt.focused_entry = &tab_cursor;
-	auto tab_bar = Menu(tab_opt);
-	auto tab_body = Container::Tab({ attrs_pane, spells_pane, inventory_pane }, &tab_index);
-	auto sheet_container = Container::Vertical({ tab_bar, tab_body });
+	tab_bar = Menu(tab_opt);
+	tab_body = Container::Tab({ attrs_pane, spells_pane, inventory_pane }, &tab_index);
+	sheet_container = Container::Vertical({ tab_bar, tab_body });
+	sheet = Renderer(sheet_container, [this] { return DrawSheet(); });
+}
 
-	auto sheet = Renderer(sheet_container, [&] {
-		PkPlayerStruct h = ed.Compose();
-		int errors = 0, warnings = 0;
-		bool raised = ed.level_target > ed.level_opened;
-		Element diag = Diagnostics(h, ed.entry.flavor, raised, &errors, &warnings);
-		bool dirty = memcmp(&h, &ed.original, sizeof(h)) != 0;
+Element Tui::DrawSheet()
+{
+	PkPlayerStruct h = ed.Compose();
+	int errors = 0, warnings = 0;
+	bool raised = ed.level_target > ed.level_opened;
+	Element diag = Diagnostics(h, ed.entry.flavor, raised, &errors, &warnings);
+	bool dirty = memcmp(&h, &ed.original, sizeof(h)) != 0;
 
-		Element body = vbox({
-		    /*
-		     * The in-progress marker rides on the header rather than taking a
-		     * row of its own: a whole line costs more than it is worth, and on
-		     * a short terminal it pushed Level and Experience out of view.
-		     */
-		    hbox({
-		        text(" " + ed.name + " ") | bold,
-		        filler(),
-		        ed.entry.in_progress ? text("game in progress  ") | color(Color::Cyan)
-		                             : text(""),
-		        text(std::string(hero_flavor_name(ed.entry.flavor)) + " "
-		            + hero_class_name(ed.entry.flavor, ed.cls) + " ")
-		            | dim,
-		    }),
-		    text(std::string(" ") + ed.entry.path) | dim,
-		    separator(),
-		    tab_bar->Render(),
-		    separator(),
-		    tab_body->Render() | flex,
-		    separator(),
-		    diag,
-		    separator(),
-		    hbox({
-		        text(dirty ? " modified" : " unchanged")
-		            | color(dirty ? Color::Yellow : Color::GrayDark),
-		        text(backup ? "  backup on" : "  backup off") | dim,
-		        filler(),
-		        text(status) | color(status_color),
-		        text("  " + std::to_string(errors) + "E " + std::to_string(warnings)
-		            + "W ")
-		            | dim,
-		    }),
-		    text(std::string(" tab pane · ↑↓ field · ←→ adjust")
-		        + (tab_index == 1 ? " · space toggle" : "")
-		        + " · ^S save · ^F fix · ^R revert · ^B backup"
-		        + (!named_one ? " · esc back" : "") + " · q quit ")
-		        | dim,
-		});
-
-		Element framed = Windowed(body, kSheetMinRows) | border;
-
-		if (!confirming)
-			return framed;
-
-		/* Writing is the one irreversible step; make it deliberate. */
-		Element ask = vbox({
-		                  text(" Save changes? ") | bold,
-		                  separator(),
-		                  text(" " + std::string(ed.entry.path)),
-		                  text(backup ? " a backup will be written first"
-		                              : " NO backup will be written")
-		                      | color(backup ? Color::Green : Color::Red),
-		                  errors > 0
-		                      ? text(" " + std::to_string(errors)
-		                            + " errors -- refusing")
-		                          | color(Color::Red)
-		                      : text(" y confirm   n cancel") | dim,
-		              })
-		    | border | bgcolor(Color::Black);
-		return dbox({ framed, ask | center });
+	Element body = vbox({
+	    /*
+	     * The in-progress marker rides on the header rather than taking a
+	     * row of its own: a whole line costs more than it is worth, and on
+	     * a short terminal it pushed Level and Experience out of view.
+	     */
+	    hbox({
+	        text(" " + ed.name + " ") | bold,
+	        filler(),
+	        ed.entry.in_progress ? text("game in progress  ") | color(Color::Cyan)
+	                             : text(""),
+	        text(std::string(hero_flavor_name(ed.entry.flavor)) + " "
+	            + hero_class_name(ed.entry.flavor, ed.cls) + " ")
+	            | dim,
+	    }),
+	    text(std::string(" ") + ed.entry.path) | dim,
+	    separator(),
+	    tab_bar->Render(),
+	    separator(),
+	    tab_body->Render() | flex,
+	    separator(),
+	    diag,
+	    separator(),
+	    hbox({
+	        text(dirty ? " modified" : " unchanged")
+	            | color(dirty ? Color::Yellow : Color::GrayDark),
+	        text(backup ? "  backup on" : "  backup off") | dim,
+	        filler(),
+	        text(status) | color(status_color),
+	        text("  " + std::to_string(errors) + "E " + std::to_string(warnings)
+	            + "W ")
+	            | dim,
+	    }),
+	    text(std::string(" tab pane · ↑↓ field · ←→ adjust")
+	        + (tab_index == 1 ? " · space toggle" : "")
+	        + " · ^S save · ^F fix · ^R revert · ^B backup"
+	        + (!named_one ? " · esc back" : "") + " · q quit ")
+	        | dim,
 	});
 
-	/* ---- events ---- */
-	auto root_container = Container::Tab({ picker, sheet }, &screen_index);
+	Element framed = Windowed(body, kSheetMinRows) | border;
 
-	auto app = CatchEvent(root_container, [&](Event e) {
-		if (confirming) {
-			if (e == Event::Character('y')) {
-				PkPlayerStruct h = ed.Compose();
-				char why[HERO_ERR_LEN];
-				if (!ed.CanSave(why, sizeof(why))) {
-					status = std::string("refused: ") + why;
-					status_color = Color::Red;
-				} else {
-					char werr[MPQ_ERR_LEN];
-					char bak[SAVE_PATH_MAX] = { 0 };
-					bool ok = true;
-					if (backup)
-						ok = save_backup_to(ed.entry.path, bak, sizeof(bak), werr) != 0;
-					SaveGameSync sync = SAVE_GAME_ABSENT;
-					if (ok)
-						ok = save_commit_ex(ed.entry.path, &h, /*backup=*/0, &sync,
-						         werr)
-						    != 0;
-					if (ok) {
-						/*
-						 * entry.hero is what "unchanged" is measured against, so
-						 * it has to become the character just written. Leaving it
-						 * as the file first read meant the sheet still said
-						 * "modified" immediately after a successful save -- which
-						 * reads as the save not having happened, and invites a
-						 * second one that writes another backup for nothing.
-						 */
-						ed.original = h;
-						ed.entry.hero = h;
-						ed.level_opened = ed.level_target;
-						ed.level_stored = h.pLevel;
-						ed.gold_opened = ed.gold;
-						/* Name the backup: it is not always <save>.bak, and the
-						 * user needs to know which file to restore from. */
-						status = backup ? std::string("saved -- backup ") + Leaf(bak)
-						                : std::string("saved");
-						if (sync == SAVE_GAME_SYNCED)
-							status += " (saved game updated too)";
-						else if (sync == SAVE_GAME_SYNCED_ITEMS)
-							status += " (saved game and inventory updated too)";
-						status_color = Color::Green;
-					} else {
-						status = std::string("failed: ") + werr;
-						status_color = Color::Red;
-					}
-				}
-				confirming = false;
-				return true;
-			}
-			if (e == Event::Character('n') || e == Event::Escape) {
-				confirming = false;
-				return true;
-			}
-			return true; /* swallow everything else while asking */
+	if (!confirming)
+		return framed;
+
+	/* Writing is the one irreversible step; make it deliberate. */
+	Element ask = vbox({
+	                  text(" Save changes? ") | bold,
+	                  separator(),
+	                  text(" " + std::string(ed.entry.path)),
+	                  text(backup ? " a backup will be written first"
+	                              : " NO backup will be written")
+	                      | color(backup ? Color::Green : Color::Red),
+	                  errors > 0
+	                      ? text(" " + std::to_string(errors)
+	                            + " errors -- refusing")
+	                          | color(Color::Red)
+	                      : text(" y confirm   n cancel") | dim,
+	              })
+	    | border | bgcolor(Color::Black);
+	return dbox({ framed, ask | center });
+}
+
+/* ---- keys ---- */
+
+bool Tui::OnEvent(Event e)
+{
+	if (confirming)
+		return OnConfirm(e);
+	if (screen_index == 0)
+		return creating ? OnCreate(e) : OnPicker(e);
+	return OnSheet(e);
+}
+
+bool Tui::OnConfirm(Event e)
+{
+	if (e == Event::Character('y')) {
+		Save();
+		confirming = false;
+		return true;
+	}
+	if (e == Event::Character('n') || e == Event::Escape) {
+		confirming = false;
+		return true;
+	}
+	return true; /* swallow everything else while asking */
+}
+
+void Tui::Save()
+{
+	PkPlayerStruct h = ed.Compose();
+	char why[HERO_ERR_LEN];
+	if (!ed.CanSave(why, sizeof(why))) {
+		status = std::string("refused: ") + why;
+		status_color = Color::Red;
+		return;
+	}
+
+	char werr[MPQ_ERR_LEN];
+	char bak[SAVE_PATH_MAX] = { 0 };
+	bool ok = true;
+	if (backup)
+		ok = save_backup_to(ed.entry.path, bak, sizeof(bak), werr) != 0;
+	SaveGameSync sync = SAVE_GAME_ABSENT;
+	if (ok)
+		ok = save_commit_ex(ed.entry.path, &h, /*backup=*/0, &sync, werr) != 0;
+	if (!ok) {
+		status = std::string("failed: ") + werr;
+		status_color = Color::Red;
+		return;
+	}
+
+	/*
+	 * entry.hero is what "unchanged" is measured against, so it has to become
+	 * the character just written. Leaving it as the file first read meant the
+	 * sheet still said "modified" immediately after a successful save -- which
+	 * reads as the save not having happened, and invites a second one that
+	 * writes another backup for nothing.
+	 */
+	ed.original = h;
+	ed.entry.hero = h;
+	ed.level_opened = ed.level_target;
+	ed.level_stored = h.pLevel;
+	ed.gold_opened = ed.gold;
+	/* Name the backup: it is not always <save>.bak, and the user needs to
+	 * know which file to restore from. */
+	status = backup ? std::string("saved -- backup ") + Leaf(bak) : std::string("saved");
+	if (sync == SAVE_GAME_SYNCED)
+		status += " (saved game updated too)";
+	else if (sync == SAVE_GAME_SYNCED_ITEMS)
+		status += " (saved game and inventory updated too)";
+	status_color = Color::Green;
+}
+
+void Tui::OpenSheet(int i)
+{
+	ed.Load(saves[i]);
+	ReloadClasses();
+	status.clear();
+	/*
+	 * Start on the tab bar: Right switches pane, Down enters it. The bar's
+	 * cursor moves with the selection, or reopening a character after
+	 * leaving one on another pane drew one tab bold and a different one
+	 * reversed.
+	 */
+	tab_index = 0;
+	tab_cursor = 0;
+	sheet_container->SetActiveChild(tab_bar.get());
+	attrs_controls->SetActiveChild(name_field.get());
+	screen_index = 1;
+}
+
+bool Tui::OnPicker(Event e)
+{
+	if (e == Event::Character('n')) {
+		creating = true;
+		creating_tab = 1;
+		new_error.clear();
+		new_name.clear();
+		new_cursor = 0;
+		create_form->SetActiveChild(create_form->ChildAt(0).get());
+		return true;
+	}
+	if (e == Event::Return) {
+		OpenSheet(picked);
+		return true;
+	}
+	if (e == Event::Character('q')) {
+		ScreenInteractive::Active()->Exit();
+		return true;
+	}
+	return false;
+}
+
+bool Tui::OnCreate(Event e)
+{
+	if (e == Event::Escape) {
+		creating = false;
+		creating_tab = 0;
+		new_error.clear();
+		return true;
+	}
+	if (e == Event::Return) {
+		Create();
+		return true;
+	}
+	return false; /* the form handles the rest */
+}
+
+void Tui::Create()
+{
+	new_error.clear();
+	HeroFlavor f = NewFlavor();
+
+	/* The first slot the game would not already find taken. */
+	char path[SAVE_PATH_MAX] = { 0 };
+	for (int i = 0; i < MAX_CHARACTERS; i++) {
+		char cand[SAVE_PATH_MAX];
+		snprintf(cand, sizeof(cand), "%s/single_%d%s", used_dir, i,
+		    f == FLAVOR_HELLFIRE ? ".hsv" : ".sv");
+		struct stat st;
+		if (stat(cand, &st) != 0) {
+			snprintf(path, sizeof(path), "%s", cand);
+			break;
 		}
+	}
+	if (path[0] == '\0') {
+		new_error = "all ten slots for that game are taken";
+		return;
+	}
 
-		if (screen_index == 0) {
-			if (creating) {
-				if (e == Event::Escape) {
-					creating = false;
-					creating_tab = 0;
-					new_error.clear();
-					return true;
-				}
-				if (e == Event::Return) {
-					new_error.clear();
-					HeroFlavor f = new_flavor_of();
+	PkPlayerStruct nh;
+	char err[MPQ_ERR_LEN];
+	if (!hero_create(&nh, f, new_class, new_name.c_str(), err)) {
+		new_error = err;
+		return;
+	}
+	char clash[SAVE_PATH_MAX];
+	if (save_name_collides(path, nh.pName, clash, sizeof(clash))) {
+		new_error = std::string(Leaf(clash)) + " already uses that name";
+		return;
+	}
+	if (!save_create(path, &nh, err)) {
+		new_error = err;
+		return;
+	}
 
-					/* The first slot the game would not already find taken. */
-					char path[SAVE_PATH_MAX] = { 0 };
-					for (int i = 0; i < MAX_CHARACTERS; i++) {
-						char cand[SAVE_PATH_MAX];
-						snprintf(cand, sizeof(cand), "%s/single_%d%s", used_dir, i,
-						    f == FLAVOR_HELLFIRE ? ".hsv" : ".sv");
-						struct stat st;
-						if (stat(cand, &st) != 0) {
-							snprintf(path, sizeof(path), "%s", cand);
-							break;
-						}
-					}
-					if (path[0] == '\0') {
-						new_error = "all ten slots for that game are taken";
-						return true;
-					}
+	/* Add it to the list and open it, so the new character is the one on
+	 * screen rather than something to go find. */
+	SaveEntry ne {};
+	snprintf(ne.path, sizeof(ne.path), "%s", path);
+	memcpy(ne.name, nh.pName, PLR_NAME_LEN);
+	ne.name[PLR_NAME_LEN] = '\0';
+	ne.slot = (int)saves.size();
+	ne.flavor = f;
+	ne.in_progress = 0;
+	ne.hero = nh;
+	saves.push_back(ne);
+	picker_items.push_back(PickerLine(ne));
+	picked = (int)saves.size() - 1;
 
-					PkPlayerStruct nh;
-					char err[MPQ_ERR_LEN];
-					if (!hero_create(&nh, f, new_class, new_name.c_str(), err)) {
-						new_error = err;
-						return true;
-					}
-					char clash[SAVE_PATH_MAX];
-					if (save_name_collides(path, nh.pName, clash, sizeof(clash))) {
-						new_error = std::string(Leaf(clash))
-						    + " already uses that name";
-						return true;
-					}
-					if (!save_create(path, &nh, err)) {
-						new_error = err;
-						return true;
-					}
+	creating = false;
+	creating_tab = 0;
+	new_name.clear();
+	OpenSheet(picked);
+	status = "created " + std::string(Leaf(path))
+	    + " -- no equipment; give it gold and buy some";
+	status_color = Color::Cyan;
+}
 
-					/* Add it to the list and open it, so the new character is
-					 * the one on screen rather than something to go find. */
-					SaveEntry ne {};
-					snprintf(ne.path, sizeof(ne.path), "%s", path);
-					memcpy(ne.name, nh.pName, PLR_NAME_LEN);
-					ne.name[PLR_NAME_LEN] = '\0';
-					ne.slot = (int)saves.size();
-					ne.flavor = f;
-					ne.in_progress = 0;
-					ne.hero = nh;
-					saves.push_back(ne);
-					picker_items.push_back(std::string("  ") + Pad(ne.name, 18)
-					    + Pad(hero_flavor_name(f), 10)
-					    + Pad(hero_class_name(f, nh.pClass), 11) + "lvl "
-					    + Pad(std::to_string(nh.pLevel), 4) + Commas(nh.pGold)
-					    + " gold");
-					picked = (int)saves.size() - 1;
-
-					creating = false;
-					creating_tab = 0;
-					new_name.clear();
-					ed.Load(saves[picked]);
-					reload_classes();
-					status = "created " + std::string(Leaf(path))
-					    + " -- no equipment; give it gold and buy some";
-					status_color = Color::Cyan;
-					tab_index = 0;
-					sheet_container->SetActiveChild(tab_bar.get());
-					attrs_controls->SetActiveChild(name_field.get());
-					screen_index = 1;
-					return true;
-				}
-				return false; /* the form handles the rest */
-			}
-
-			if (e == Event::Character('n')) {
-				creating = true;
-				creating_tab = 1;
-				new_error.clear();
-				new_name.clear();
-				new_cursor = 0;
-				create_form->SetActiveChild(create_form->ChildAt(0).get());
-				return true;
-			}
-			if (e == Event::Return) {
-				ed.Load(saves[picked]);
-				reload_classes();
-				status.clear();
-				tab_index = 0;
-				/* Start on the tab bar: Right switches pane, Down enters it. */
-				sheet_container->SetActiveChild(tab_bar.get());
-				attrs_controls->SetActiveChild(name_field.get());
-				screen_index = 1;
-				return true;
-			}
-			if (e == Event::Character('q')) {
-				ScreenInteractive::Active()->Exit();
-				return true;
-			}
-			return false;
-		}
-
-		/* Tab cycles panes; the bar's cursor has to follow the selection. */
-		if (e == Event::Tab || e == Event::TabReverse) {
-			/*
-			 * Where focus ends up has to be decided here, not left to whatever
-			 * it happened to be. Changing the index alone could leave focus on
-			 * a pane that is no longer shown, or nowhere at all -- and then
-			 * arrows did nothing until you found your way back by hand.
-			 */
-			bool was_in_pane = tab_body->Focused();
-			int n = (int)tab_names.size();
-			tab_index = (tab_index + (e == Event::Tab ? 1 : n - 1)) % n;
-			tab_cursor = tab_index;
-			sheet_container->SetActiveChild(
-			    was_in_pane ? tab_body.get() : tab_bar.get());
-			return true;
-		}
-
-		/* Ctrl chords are only meaningful once a character is open. */
-		if (e == Event::CtrlS) {
-			confirming = true;
-			return true;
-		}
-		if (e == Event::CtrlR) {
-			ed.Load(ed.entry);
-			status = "reverted";
-			status_color = Color::GrayLight;
-			return true;
-		}
-		if (e == Event::CtrlB) {
-			backup = !backup;
-			return true;
-		}
+bool Tui::OnSheet(Event e)
+{
+	/* Tab cycles panes; the bar's cursor has to follow the selection. */
+	if (e == Event::Tab || e == Event::TabReverse) {
 		/*
-		 * Repair. The sheet refuses to save an invalid character, so without
-		 * this there is no way out of one from inside the UI. Nothing is
-		 * written -- ^S still saves and ^R still throws it away.
+		 * Where focus ends up has to be decided here, not left to whatever
+		 * it happened to be. Changing the index alone could leave focus on
+		 * a pane that is no longer shown, or nowhere at all -- and then
+		 * arrows did nothing until you found your way back by hand.
 		 */
-		if (e == Event::CtrlF) {
-			PkPlayerStruct h = ed.Compose();
-			DiagList log;
-			dl_init(&log);
-			int n = hero_fix(&h, ed.entry.flavor, /*settle_warnings=*/1, &log);
-			std::string first;
-			if (log.n > 0)
-				first = log.items[0].msg;
-			dl_free(&log);
+		bool was_in_pane = tab_body->Focused();
+		int n = (int)tab_names.size();
+		tab_index = (tab_index + (e == Event::Tab ? 1 : n - 1)) % n;
+		tab_cursor = tab_index;
+		sheet_container->SetActiveChild(
+		    was_in_pane ? tab_body.get() : tab_bar.get());
+		return true;
+	}
 
-			if (n == 0) {
-				status = "nothing to repair";
-				status_color = Color::GrayLight;
-			} else {
-				ed.ApplyRepair(h);
-				reload_classes();
-				status = std::to_string(n) + (n == 1 ? " fix: " : " fixes, first: ")
-				    + first + "  (^S save, ^R undo)";
-				status_color = Color::Green;
-			}
-			return true;
-		}
-		/* Back to the picker, unless a single save was named on the command
-		 * line and there is no picker to go back to. */
-		if (e == Event::Escape && !named_one) {
-			screen_index = 0;
-			return true;
-		}
-		/* `q` must not quit while a text field has focus, or names cannot
-		 * contain the letter. */
-		if (e == Event::Character('q') && !name_input->Focused()) {
-			ScreenInteractive::Active()->Exit();
-			return true;
-		}
-		return false;
-	});
+	/* Ctrl chords are only meaningful once a character is open. */
+	if (e == Event::CtrlS) {
+		confirming = true;
+		return true;
+	}
+	if (e == Event::CtrlR) {
+		ed.Load(ed.entry);
+		status = "reverted";
+		status_color = Color::GrayLight;
+		return true;
+	}
+	if (e == Event::CtrlB) {
+		backup = !backup;
+		return true;
+	}
+	/*
+	 * Repair. The sheet refuses to save an invalid character, so without
+	 * this there is no way out of one from inside the UI. Nothing is
+	 * written -- ^S still saves and ^R still throws it away.
+	 */
+	if (e == Event::CtrlF) {
+		PkPlayerStruct h = ed.Compose();
+		DiagList log;
+		dl_init(&log);
+		int n = hero_fix(&h, ed.entry.flavor, /*settle_warnings=*/1, &log);
+		std::string first;
+		if (log.n > 0)
+			first = log.items[0].msg;
+		dl_free(&log);
 
+		if (n == 0) {
+			status = "nothing to repair";
+			status_color = Color::GrayLight;
+		} else {
+			ed.ApplyRepair(h);
+			ReloadClasses();
+			status = std::to_string(n) + (n == 1 ? " fix: " : " fixes, first: ")
+			    + first + "  (^S save, ^R undo)";
+			status_color = Color::Green;
+		}
+		return true;
+	}
+	/* Back to the picker, unless a single save was named on the command
+	 * line and there is no picker to go back to. */
+	if (e == Event::Escape && !named_one) {
+		screen_index = 0;
+		return true;
+	}
+	/* `q` must not quit while a text field has focus, or names cannot
+	 * contain the letter. */
+	if (e == Event::Character('q') && !name_input->Focused()) {
+		ScreenInteractive::Active()->Exit();
+		return true;
+	}
+	return false;
+}
+
+/* ---- running ---- */
+
+void Tui::ApplyFlags(int argc, char **argv)
+{
 	/* --new opens the create form before rendering, like --tab for the sheet. */
 	for (int i = 1; i < argc; i++)
 		if (strcmp(argv[i], "--new") == 0) {
@@ -1276,20 +1453,45 @@ int tui_main(int argc, char **argv)
 		if (focus_row < (int)pane->ChildCount())
 			pane->SetActiveChild(pane->ChildAt(focus_row).get());
 	}
+}
 
-	if (want_render) {
-		auto doc = (screen_index == 0 ? picker : sheet)->Render();
-		/* flex resolves to its minimum under Fit, which silently drops the
-		 * lower half of the sheet; give the frame a real height instead.
-		 * Windowed() assumes this height when there is no screen to ask. */
-		auto out = Screen::Create(Dimension::Fixed(78), Dimension::Fixed(render_rows));
-		Render(out, doc);
-		out.Print();
-		printf("\n");
-		return 0;
-	}
+void Tui::RenderOnce()
+{
+	auto doc = (screen_index == 0 ? picker : sheet)->Render();
+	/* flex resolves to its minimum under Fit, which silently drops the
+	 * lower half of the sheet; give the frame a real height instead.
+	 * Windowed() assumes this height when there is no screen to ask. */
+	auto out = Screen::Create(Dimension::Fixed(78), Dimension::Fixed(render_rows));
+	Render(out, doc);
+	out.Print();
+	printf("\n");
+}
 
+void Tui::Loop()
+{
 	auto screen = ScreenInteractive::Fullscreen();
 	screen.Loop(app);
+}
+
+} // namespace
+
+/* ------------------------------------------------------------------ */
+/* Main                                                                */
+/* ------------------------------------------------------------------ */
+
+/* Entry point when no subcommand is given; see butcher.cpp for dispatch. */
+int tui_main(int argc, char **argv)
+{
+	Launch launch;
+	int rc = FindSaves(argc, argv, &launch);
+	if (rc >= 0)
+		return rc;
+
+	Tui tui(launch);
+	tui.ApplyFlags(argc, argv);
+	if (launch.want_render)
+		tui.RenderOnce();
+	else
+		tui.Loop();
 	return 0;
 }

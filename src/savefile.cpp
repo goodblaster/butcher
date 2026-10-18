@@ -5,14 +5,13 @@
  * that rebuild the archive into a verified temporary file. See savefile.h.
  */
 #include "savefile.h"
+#include "compat/platform.h"
+#include "errbuf.h"
 
 #include "../third_party/devilution/Source/encrypt.h"
 #include "../third_party/devilution/3rdParty/PKWare/pkware.h"
 
 #include <errno.h>
-#include <stdarg.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /* The tables are consumed as raw little-endian images, exactly as the game
  * writes them. These three structs live outside any #pragma pack region and
@@ -28,15 +27,7 @@ struct MpqArchive {
 	_BLOCKENTRY *block;
 };
 
-static void seterr(char *err, const char *fmt, ...)
-{
-	if (err == NULL)
-		return;
-	va_list va;
-	va_start(va, fmt);
-	vsnprintf(err, MPQ_ERR_LEN, fmt, va);
-	va_end(va);
-}
+#define seterr(err, ...) errbuf_set((err), MPQ_ERR_LEN, __VA_ARGS__)
 
 static int host_is_little_endian(void)
 {
@@ -519,11 +510,28 @@ static int write_all(FILE *f, const void *buf, size_t len)
 int mpq_replace_file(const char *path, const char *name, const BYTE *data,
     DWORD len, char *err)
 {
+	MpqReplacement r = { name, data, len };
+	return mpq_replace_files(path, &r, 1, err);
+}
+
+/** Index into the replacement list for an old block, or -1 if untouched. */
+static int target_of(const int *target_block, int n, int old_index)
+{
+	for (int t = 0; t < n; t++) {
+		if (target_block[t] == old_index)
+			return t;
+	}
+	return -1;
+}
+
+int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
+    char *err)
+{
 	MpqArchive *a = NULL;
 	_BLOCKENTRY *newblk = NULL;
 	_HASHENTRY *newhash = NULL;
 	LiveBlock *live = NULL;
-	BYTE *body = NULL;
+	BYTE *body[MPQ_REPLACE_MAX] = { NULL };
 	BYTE *copybuf = NULL;
 	char *tmppath = NULL;
 	FILE *out = NULL;
@@ -531,27 +539,46 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 
 	/* Declared up front: every failure path jumps to `out`, and C++ forbids
 	 * a goto that bypasses an initialization still in scope at the label. */
-	int target_hash, target_block, nlive, i, h;
-	DWORD body_len, cursor;
+	int target_block[MPQ_REPLACE_MAX];
+	DWORD body_len[MPQ_REPLACE_MAX];
+	int nlive, i, h, t;
+	DWORD cursor;
 	int remap[MPQ_INDEX_ENTRIES];
+
+	if (n < 1 || n > MPQ_REPLACE_MAX) {
+		seterr(err, "cannot replace %d files at once (1..%d)", n, MPQ_REPLACE_MAX);
+		return 0;
+	}
 
 	a = mpq_open(path, err);
 	if (a == NULL)
 		return 0;
 
-	target_hash = find_hash_index(a, name);
-	if (target_hash < 0) {
-		seterr(err, "\"%s\" does not exist in the archive (this tool replaces "
-		            "files, it does not add them)",
-		    name);
-		goto out;
-	}
-	target_block = a->hash[target_hash].block;
+	/*
+	 * Every member is resolved and encoded before anything is written. Doing
+	 * them together is the point: a save whose `hero` and `game` were written
+	 * by two separate renames could be left holding one new and one old copy
+	 * of the character if the second failed.
+	 */
+	for (t = 0; t < n; t++) {
+		int hidx = find_hash_index(a, files[t].name);
+		if (hidx < 0) {
+			seterr(err, "\"%s\" does not exist in the archive (this tool replaces "
+			            "files, it does not add them)",
+			    files[t].name);
+			goto out;
+		}
+		target_block[t] = a->hash[hidx].block;
+		if (target_of(target_block, t, target_block[t]) >= 0) {
+			seterr(err, "\"%s\" was named twice in one replacement", files[t].name);
+			goto out;
+		}
 
-	body_len = 0;
-	body = build_file_body(data, len, &body_len, err);
-	if (body == NULL)
-		goto out;
+		body_len[t] = 0;
+		body[t] = build_file_body(files[t].data, files[t].len, &body_len[t], err);
+		if (body[t] == NULL)
+			goto out;
+	}
 
 	/* Collect live blocks, in their original on-disk order so an unchanged
 	 * archive rewrites to the same layout. */
@@ -598,14 +625,13 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 
 	cursor = MPQ_DATA_OFFSET;
 	for (i = 0; i < nlive; i++) {
-		DWORD size = (live[i].old_index == target_block)
-		    ? body_len
-		    : (DWORD)live[i].blk.sizealloc;
+		t = target_of(target_block, n, live[i].old_index);
+		DWORD size = t >= 0 ? body_len[t] : (DWORD)live[i].blk.sizealloc;
 
 		newblk[i].offset = (int)cursor;
 		newblk[i].sizealloc = (int)size;
-		if (live[i].old_index == target_block) {
-			newblk[i].sizefile = (int)len;
+		if (t >= 0) {
+			newblk[i].sizefile = (int)files[t].len;
 			newblk[i].flags = (int)(MPQ_FLAG_EXISTS | MPQ_FLAG_IMPLODE);
 		} else {
 			newblk[i].sizefile = live[i].blk.sizefile;
@@ -642,27 +668,12 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 			seterr(err, "out of memory");
 			goto out;
 		}
-		snprintf(tmppath, n, "%s.tmpXXXXXX", path);
-		int fd = mkstemp(tmppath);
-		if (fd < 0) {
+		out = plat_temp_beside(path, tmppath, n);
+		if (out == NULL) {
 			seterr(err, "cannot create temporary file beside %s: %s", path,
 			    strerror(errno));
 			free(tmppath);
 			tmppath = NULL;
-			goto out;
-		}
-		/*
-		 * mkstemp creates at 0600 and rename() carries that mode onto the
-		 * target, so without this the save silently loses its permissions.
-		 */
-		struct stat st;
-		if (stat(path, &st) == 0)
-			(void)fchmod(fd, st.st_mode & 07777);
-
-		out = fdopen(fd, "wb");
-		if (out == NULL) {
-			seterr(err, "cannot open temporary file: %s", strerror(errno));
-			close(fd);
 			goto out;
 		}
 	}
@@ -707,9 +718,10 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 		goto out;
 	}
 	for (i = 0; i < nlive; i++) {
-		if (live[i].old_index == target_block) {
-			if (!write_all(out, body, body_len)) {
-				seterr(err, "short write writing \"%s\"", name);
+		t = target_of(target_block, n, live[i].old_index);
+		if (t >= 0) {
+			if (!write_all(out, body[t], body_len[t])) {
+				seterr(err, "short write writing \"%s\"", files[t].name);
 				goto out;
 			}
 			continue;
@@ -732,7 +744,14 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 		}
 	}
 
-	if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+	/*
+	 * Done with the original. Closed before the rename because Windows will
+	 * not replace a file this process still has open.
+	 */
+	mpq_close(a);
+	a = NULL;
+
+	if (plat_sync(out) != 0) {
 		seterr(err, "cannot flush temporary file: %s", strerror(errno));
 		goto out;
 	}
@@ -757,26 +776,31 @@ int mpq_replace_file(const char *path, const char *name, const BYTE *data,
 			    verr);
 			goto out;
 		}
-		DWORD got_len = 0;
-		BYTE *got = mpq_read_file(v, name, &got_len, verr);
+		for (t = 0; t < n; t++) {
+			DWORD got_len = 0;
+			BYTE *got = mpq_read_file(v, files[t].name, &got_len, verr);
+			if (got == NULL) {
+				mpq_close(v);
+				seterr(err, "wrote a file whose \"%s\" will not read back (%s); "
+				            "original left untouched",
+				    files[t].name, verr);
+				goto out;
+			}
+			int same = (got_len == files[t].len)
+			    && memcmp(got, files[t].data, files[t].len) == 0;
+			free(got);
+			if (!same) {
+				mpq_close(v);
+				seterr(err, "verification failed: \"%s\" read back differently; "
+				            "original left untouched",
+				    files[t].name);
+				goto out;
+			}
+		}
 		mpq_close(v);
-		if (got == NULL) {
-			seterr(err, "wrote a file whose \"%s\" will not read back (%s); "
-			            "original left untouched",
-			    name, verr);
-			goto out;
-		}
-		int same = (got_len == len) && memcmp(got, data, len) == 0;
-		free(got);
-		if (!same) {
-			seterr(err, "verification failed: \"%s\" read back differently; "
-			            "original left untouched",
-			    name);
-			goto out;
-		}
 	}
 
-	if (rename(tmppath, path) != 0) {
+	if (plat_replace(tmppath, path) != 0) {
 		seterr(err, "cannot replace %s: %s", path, strerror(errno));
 		goto out;
 	}
@@ -792,7 +816,8 @@ out:
 		free(tmppath);
 	}
 	mpq_close(a);
-	free(body);
+	for (t = 0; t < MPQ_REPLACE_MAX; t++)
+		free(body[t]);
 	free(copybuf);
 	free(live);
 	free(newblk);
@@ -806,8 +831,16 @@ out:
 
 int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 {
+	return save_write_character(path, hero, NULL, 0, err);
+}
+
+int save_write_character(const char *path, const PkPlayerStruct *hero,
+    const BYTE *game, DWORD game_len, char *err)
+{
 	DWORD plain = (DWORD)sizeof(*hero);
 	DWORD enc = codec_get_encoded_len(plain);
+	BYTE *gbuf = NULL;
+	DWORD genc = 0;
 
 	BYTE *buf = (BYTE *)calloc(1, enc);
 	if (buf == NULL) {
@@ -817,21 +850,43 @@ int save_write_hero(const char *path, const PkPlayerStruct *hero, char *err)
 	memcpy(buf, hero, plain);
 	codec_encode(buf, plain, enc, SAVE_PASSWORD_SINGLE);
 
-	int r = mpq_replace_file(path, "hero", buf, enc, err);
+	MpqReplacement files[2] = { { "hero", buf, enc } };
+	int n = 1;
+
+	if (game != NULL) {
+		genc = codec_get_encoded_len(game_len);
+		gbuf = (BYTE *)calloc(1, genc);
+		if (gbuf == NULL) {
+			free(buf);
+			seterr(err, "out of memory");
+			return 0;
+		}
+		memcpy(gbuf, game, game_len);
+		codec_encode(gbuf, game_len, genc, SAVE_PASSWORD_SINGLE);
+		files[1].name = "game";
+		files[1].data = gbuf;
+		files[1].len = genc;
+		n = 2;
+	}
+
+	int r = mpq_replace_files(path, files, n, err);
 	free(buf);
+	free(gbuf);
 	return r;
 }
 
 int save_create(const char *path, const PkPlayerStruct *h, char *err)
 {
 	/* "x" so an existing character is never silently replaced. */
-	FILE *f = fopen(path, "wbx");
+	FILE *f = plat_fopen_new(path);
 	if (f == NULL) {
 		seterr(err, "cannot create %s: %s", path, strerror(errno));
 		return 0;
 	}
 
-	BYTE blob[1288];
+	/* Aligned because codec_encode writes its trailer through a struct
+	 * pointer into the buffer's tail; the game only ever passes it heap. */
+	alignas(4) BYTE blob[1288];
 	memset(blob, 0, sizeof(blob));
 	memcpy(blob, h, sizeof(*h));
 	codec_encode(blob, sizeof(*h), sizeof(blob), SAVE_PASSWORD_SINGLE);
@@ -855,6 +910,14 @@ int save_create(const char *path, const PkPlayerStruct *h, char *err)
 	BYTE sector[MPQ_SECTOR_SIZE];
 	memcpy(sector, blob, sizeof(blob));
 	int stored = PkwareCompress(sector, (int)sizeof(blob));
+	if (stored <= 0 || (size_t)stored > sizeof(blob)) {
+		free(block);
+		free(hash);
+		fclose(f);
+		remove(path);
+		seterr(err, "the character compressed to an invalid size %d", stored);
+		return 0;
+	}
 	offs[0] = 8;
 	offs[1] = 8 + (DWORD)stored;
 	memcpy(body + 8, sector, (size_t)stored);
