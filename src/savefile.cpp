@@ -328,10 +328,12 @@ BYTE *mpq_read_file(MpqArchive *a, const char *name, DWORD *out_len, char *err)
 		seterr(err, "\"%s\": empty or negative file size (%d)", name, blk->sizefile);
 		return NULL;
 	}
+	/* In 64 bits: long is 32 on Windows, where two large ints summed would
+	 * wrap negative and slip under the file size. */
 	if (blk->offset < MPQ_DATA_OFFSET || blk->sizealloc < 0
-	    || (long)blk->offset + blk->sizealloc > a->filesize) {
-		seterr(err, "\"%s\": block region [%d,%d) lies outside the file (size %ld)",
-		    name, blk->offset, blk->offset + blk->sizealloc, a->filesize);
+	    || (long long)blk->offset + blk->sizealloc > (long long)a->filesize) {
+		seterr(err, "\"%s\": block region [%d,%lld) lies outside the file (size %ld)",
+		    name, blk->offset, (long long)blk->offset + blk->sizealloc, a->filesize);
 		return NULL;
 	}
 
@@ -606,7 +608,7 @@ int mpq_replace_files(const char *path, const MpqReplacement *files, int n,
 
 			_BLOCKENTRY *src = &a->block[b];
 			if (src->offset < MPQ_DATA_OFFSET || src->sizealloc < 0
-			    || (long)src->offset + src->sizealloc > a->filesize) {
+			    || (long long)src->offset + src->sizealloc > (long long)a->filesize) {
 				seterr(err, "block %d lies outside the file; refusing to rewrite "
 				            "a malformed archive",
 				    b);

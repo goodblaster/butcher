@@ -91,6 +91,20 @@ typedef enum SaveGameSync {
 int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
     SaveGameSync *sync, char *err);
 
+/**
+ * save_commit_ex, also reporting where the backup went.
+ *
+ * The front ends want to name the backup, and used to get the name by making
+ * the copy themselves before committing. That put it ahead of every check in
+ * here, so each refused edit left a stray `.bak` behind for a save that was
+ * never touched. Asking the commit for it keeps the copy where it belongs:
+ * after everything that can refuse, immediately before the write.
+ *
+ * @param bak optional; receives the backup's path, or "" if none was made.
+ */
+int save_commit_bak(const char *path, const PkPlayerStruct *h, int backup,
+    char *bak, size_t bak_len, SaveGameSync *sync, char *err);
+
 /** save_commit_ex without the report. */
 int save_commit(const char *path, const PkPlayerStruct *h, int backup, char *err);
 

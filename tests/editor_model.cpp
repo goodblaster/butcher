@@ -574,11 +574,7 @@ static void check_sheet_save(void)
 	 * character just written, or "unchanged" is measured against the file as it
 	 * was first read and the sheet keeps claiming there is something to save.
 	 */
-	ed.original = composed;
-	ed.entry.hero = composed;
-	ed.gold_opened = ed.gold;
-	ed.level_opened = ed.level_target;
-	ed.level_stored = composed.pLevel;
+	ed.Saved(composed);
 
 	PkPlayerStruct again = ed.Compose();
 	ok(memcmp(&again, &composed, sizeof(again)) == 0,
@@ -593,6 +589,39 @@ static void check_sheet_save(void)
 	PkPlayerStruct reverted = ed.Compose();
 	ok(hero_gold_in_stacks(&reverted) == 40000,
 	    "  ...which is the 40000 that was written, not the original 3000");
+
+	/*
+	 * Leaving the sheet and coming back. The picker keeps its own copy of each
+	 * save and reopening loads from it, so after a save that copy has to be the
+	 * character just written. It used to stay as first read: the reopened sheet
+	 * showed the old 3000 as "unchanged", and the next save put it back.
+	 */
+	{
+		SaveEntry listed = e;  /* the picker's copy, as first read */
+		listed = ed.entry;     /* what the sheet hands back after a save */
+
+		Editor reopened;
+		reopened.Load(listed);
+		PkPlayerStruct r = reopened.Compose();
+		ok(memcmp(&r, &on_disk, sizeof(r)) == 0,
+		    "reopening after a save shows what is on disk");
+		ok(!reopened.Dirty(), "  ...as unchanged");
+
+		reopened.str = reopened.str + 1;
+		PkPlayerStruct second = reopened.Compose();
+		ok(hero_gold_in_stacks(&second) == 40000,
+		    "  ...so a second save keeps the first one's gold");
+	}
+
+	/* The entry's name follows a rename, since the picker shows it. */
+	{
+		Editor renamed;
+		renamed.Load(e);
+		renamed.name = "Wirt";
+		renamed.Saved(renamed.Compose());
+		ok(strcmp(renamed.entry.name, "Wirt") == 0,
+		    "a saved rename reaches the entry the picker lists");
+	}
 
 	/*
 	 * What the sheet refuses. It used to refuse less than the command line: a

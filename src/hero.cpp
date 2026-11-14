@@ -300,8 +300,19 @@ int hero_create(PkPlayerStruct *h, HeroFlavor f, int pclass, const char *name,
 
 int hero_next_exper(const PkPlayerStruct *h)
 {
-	/* _pNextExper is ExpLvlsTbl[_pLevel], i.e. what the next level costs. */
-	return hero_exp_for_level(h->pLevel + 1);
+	/*
+	 * _pNextExper is ExpLvlsTbl[_pLevel] (Source/player.cpp:981), read straight
+	 * off the table. Not hero_exp_for_level(level + 1): that clamps to the level
+	 * cap, so at level 50 it answered with what level 50 costs rather than the
+	 * table's last entry -- and a level-50 character was told it could hold
+	 * 270 million less experience than the game lets it.
+	 */
+	int lvl = h->pLevel;
+	if (lvl < 0)
+		lvl = 0;
+	if (lvl > MAXCHARLEVEL - 1)
+		lvl = MAXCHARLEVEL - 1;
+	return kExpLvlsTbl[lvl];
 }
 
 int hero_level_up(PkPlayerStruct *h, HeroFlavor f, int level, char *err)
@@ -666,7 +677,9 @@ int hero_set_gold(PkPlayerStruct *h, HeroFlavor f, int total, char *err)
 	work._pNumInv = (BYTE)kept;
 
 	/* Lay down new stacks. */
-	int stacks = (want + stack_max - 1) / stack_max;
+	/* In 64 bits: a total near INT_MAX overflowed the rounding and came out
+	 * as a negative stack count, which then passed the room check below. */
+	int stacks = (int)(((long long)want + stack_max - 1) / stack_max);
 	int free_cells = 0;
 	for (int c = 0; c < NUM_INV_GRID_ELEM; c++)
 		if (work.InvGrid[c] == 0)

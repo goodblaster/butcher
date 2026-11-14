@@ -253,7 +253,14 @@ typedef struct Parser {
 	const char *start;
 	char *err;
 	int failed;
+	int depth;
 } Parser;
+
+/*
+ * A character document nests four deep. The parser recurses per level, so
+ * without a ceiling a file of nothing but '[' ran it off the end of the stack.
+ */
+#define JSON_MAX_DEPTH 64
 
 static void perr(Parser *ps, const char *fmt, ...)
 {
@@ -538,10 +545,16 @@ static JValue *parse_value(Parser *ps)
 {
 	skip_ws(ps);
 
-	if (*ps->p == '{')
-		return parse_object(ps);
-	if (*ps->p == '[')
-		return parse_array(ps);
+	if (*ps->p == '{' || *ps->p == '[') {
+		if (ps->depth >= JSON_MAX_DEPTH) {
+			perr(ps, "nested more than %d levels deep", JSON_MAX_DEPTH);
+			return NULL;
+		}
+		ps->depth++;
+		JValue *v = *ps->p == '{' ? parse_object(ps) : parse_array(ps);
+		ps->depth--;
+		return v;
+	}
 	if (*ps->p == '"') {
 		char *s = parse_string_raw(ps);
 		if (ps->failed)
@@ -596,6 +609,7 @@ JValue *json_parse(const char *text, char *err)
 	ps.start = text;
 	ps.err = err;
 	ps.failed = 0;
+	ps.depth = 0;
 
 	JValue *v = parse_value(&ps);
 	if (ps.failed) {

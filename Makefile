@@ -306,7 +306,7 @@ asan:
 # The harnesses in fuzz/ meet libFuzzer's interface. Linked with driver.cpp
 # they mutate a built-in seed on any compiler; linked with libFuzzer they are
 # coverage-guided. FUZZ_ENGINE selects which.
-FUZZERS := save game json
+FUZZERS := save game sealed json
 FUZZ_BINS := $(addprefix $(BUILD)/fuzz_,$(FUZZERS))
 FUZZ_ENGINE ?=
 FUZZ_DRIVER := $(if $(FUZZ_ENGINE),,$(BUILD)/fuzz_driver.o)
@@ -321,7 +321,7 @@ $(BUILD)/fuzz_%: $(BUILD)/fuzz_%.o $(FUZZ_DRIVER) $(LIB_OBJ) $(GAME_OBJ)
 fuzz-bins: $(FUZZ_BINS)
 
 # Otherwise make treats the harness objects as intermediates and deletes them,
-# rebuilding all three on every run.
+# rebuilding all of them on every run.
 .PRECIOUS: $(BUILD)/fuzz_%.o
 
 # The standalone driver, sanitized. Quick enough to run before a commit.

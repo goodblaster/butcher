@@ -1183,12 +1183,10 @@ void Tui::Save()
 
 	char werr[MPQ_ERR_LEN];
 	char bak[SAVE_PATH_MAX] = { 0 };
-	bool ok = true;
-	if (backup)
-		ok = save_backup_to(ed.entry.path, bak, sizeof(bak), werr) != 0;
 	SaveGameSync sync = SAVE_GAME_ABSENT;
-	if (ok)
-		ok = save_commit_ex(ed.entry.path, &h, /*backup=*/0, &sync, werr) != 0;
+	bool ok = save_commit_bak(ed.entry.path, &h, backup ? 1 : 0, bak, sizeof(bak),
+	              &sync, werr)
+	    != 0;
 	if (!ok) {
 		status = std::string("failed: ") + werr;
 		status_color = Color::Red;
@@ -1202,11 +1200,12 @@ void Tui::Save()
 	 * reads as the save not having happened, and invites a second one that
 	 * writes another backup for nothing.
 	 */
-	ed.original = h;
-	ed.entry.hero = h;
-	ed.level_opened = ed.level_target;
-	ed.level_stored = h.pLevel;
-	ed.gold_opened = ed.gold;
+	ed.Saved(h);
+	/* And the picker's copy, which is what reopening this character loads. */
+	if (picked >= 0 && picked < (int)saves.size()) {
+		saves[picked] = ed.entry;
+		picker_items[picked] = PickerLine(ed.entry);
+	}
 	/* Name the backup: it is not always <save>.bak, and the user needs to
 	 * know which file to restore from. */
 	status = backup ? std::string("saved -- backup ") + Leaf(bak) : std::string("saved");

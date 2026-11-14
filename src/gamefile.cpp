@@ -464,15 +464,43 @@ int game_apply_inventory(BYTE *buf, DWORD len, const GameLoc *loc,
 	for (int i = 0; i < neu->_pNumInv; i++) {
 		const PkItemStruct *pk = &neu->InvList[i];
 		const BYTE *src = NULL;
+		int edited = 0;
 
 		/* The same item, wherever it used to sit. */
 		for (int j = 0; j < old->_pNumInv; j++) {
 			const BYTE *cand = before + (size_t)j * GAME_ITEM_SIZE;
 			if ((DWORD)rd32(cand + GAME_ITEM_SEED) == pk->iSeed
 			    && old->InvList[j].idx == pk->idx) {
+				/*
+				 * Anything but gold has to be the same item in every packed
+				 * field, not merely the same seed. Duplicated items share a
+				 * seed, so keep looking for the exact one; and an item whose
+				 * durability or charges were edited has no exact one, which
+				 * is caught below.
+				 */
+				if (pk->idx != IDI_GOLD
+				    && memcmp(&old->InvList[j], pk, sizeof(*pk)) != 0) {
+					edited = 1;
+					continue;
+				}
 				src = cand;
 				break;
 			}
+		}
+
+		/*
+		 * Found, but changed. Only a gold pile's amount can be carried
+		 * across; durability, charges and the rest live in fields of the full
+		 * ItemStruct this does not know, so writing the packed copy alone
+		 * would be an edit the game throws away.
+		 */
+		if (src == NULL && edited) {
+			free(before);
+			seterr(err, "inventory slot %d holds an item whose details were "
+			            "changed, and only gold can be changed in a saved game "
+			            "in progress; the items were left alone",
+			    i);
+			return -1;
 		}
 
 		if (src == NULL) {
@@ -652,6 +680,19 @@ BYTE *game_read(const char *path, DWORD *out_len, int *present, char *err)
 	if (dec == 0) {
 		free(buf);
 		seterr(err, "\"game\" did not decode; this may be a multiplayer save");
+		return NULL;
+	}
+	/*
+	 * codec_decode derives its result from the trailer's last_chunk_size, and
+	 * the checksum does not cover the trailer. A value above 64 there makes
+	 * the "decoded" length longer than the buffer that holds it, and every
+	 * scan and patch after this would run off the end of the allocation.
+	 */
+	if (dec > len - 8) {
+		free(buf);
+		seterr(err, "\"game\" claims to decode to %u bytes but only holds %u; "
+		            "the saved game is corrupt",
+		    (unsigned)dec, (unsigned)(len - 8));
 		return NULL;
 	}
 	*out_len = dec;
