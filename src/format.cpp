@@ -249,8 +249,43 @@ int format_diff(const PkPlayerStruct *before, const PkPlayerStruct *after,
 	}
 
 	int gb = hero_gold_in_stacks(before), ga = hero_gold_in_stacks(after);
-	if (gb != ga)
+	if (gb != ga) {
 		fprintf(out, "  %-12s %d -> %d\n", "gold stacks", gb, ga);
+		/*
+		 * Counted only when the cached total did not move with it, so an
+		 * ordinary gold edit is still one change. That case is real: a save
+		 * whose cache already reads 9000 over 5000 in stacks had its stacks
+		 * rewritten, was told "no changes", and was not saved.
+		 */
+		if (before->pGold == after->pGold)
+			n++;
+	}
+
+	/*
+	 * Everything the lines above do not name. Items and the rest of the
+	 * struct are reachable through import and patch, and a diff that said
+	 * nothing about them was reported as "no changes" on its way to being
+	 * written.
+	 */
+	if (memcmp(before->InvBody, after->InvBody, sizeof(before->InvBody)) != 0) {
+		fprintf(out, "  %-12s changed\n", "equipment");
+		n++;
+	}
+	if (memcmp(before->SpdList, after->SpdList, sizeof(before->SpdList)) != 0) {
+		fprintf(out, "  %-12s changed\n", "belt");
+		n++;
+	}
+	if (gb == ga
+	    && (memcmp(before->InvList, after->InvList, sizeof(before->InvList)) != 0
+	        || memcmp(before->InvGrid, after->InvGrid, sizeof(before->InvGrid)) != 0
+	        || before->_pNumInv != after->_pNumInv)) {
+		fprintf(out, "  %-12s changed\n", "inventory");
+		n++;
+	}
+	if (n == 0 && memcmp(before, after, sizeof(*before)) != 0) {
+		fprintf(out, "  %-12s changed\n", "other fields");
+		n++;
+	}
 
 	return n;
 }

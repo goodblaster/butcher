@@ -573,6 +573,91 @@ static void check_exp(void)
 	ok(hero_exp_for_level(1) == 0, "level 1 needs no experience");
 	ok(hero_exp_for_level(2) == 2000, "level 2 needs 2000");
 
+	/*
+	 * _pNextExper is ExpLvlsTbl[_pLevel]. At the cap that is the table's last
+	 * entry, not what level 50 itself costs -- the difference is experience a
+	 * level-50 character really holds, and it used to be clamped away.
+	 */
+	{
+		PkPlayerStruct p;
+		base_hero(&p, PC_WARRIOR);
+		p.pLevel = 1;
+		ok(hero_next_exper(&p) == 2000, "a level-1 character next needs 2000");
+		p.pLevel = 49;
+		ok(hero_next_exper(&p) == 1310707109, "level 49 next needs 1310707109");
+		p.pLevel = 50;
+		ok(hero_next_exper(&p) == 1583495809,
+		    "level 50 holds up to 1583495809, the table's last entry");
+
+		p.pExperience = 1500000000;
+		p.pGold = hero_gold_in_stacks(&p);
+		PkPlayerStruct fixed = p;
+		DiagList log;
+		dl_init(&log);
+		hero_fix(&fixed, FLAVOR_DIABLO, /*settle_warnings=*/1, &log);
+		dl_free(&log);
+		ok(fixed.pExperience == 1500000000,
+		    "a full repair leaves a level-50 character's experience alone");
+	}
+
+	/*
+	 * The diff decides whether `set` and `import` have anything to write, so
+	 * a change it does not count is a change that is reported as none.
+	 */
+	{
+		PkPlayerStruct a, b;
+		char gerr[HERO_ERR_LEN];
+		/* A named scratch file: tmpfile() needs the drive root on Windows. */
+		char sink_path[1024];
+		snprintf(sink_path, sizeof(sink_path), "%s", tmppath("diff.out"));
+		FILE *sink = fopen(sink_path, "w");
+		if (sink == NULL)
+			sink = stdout;
+		base_hero(&a, PC_WARRIOR);
+		hero_set_gold(&a, FLAVOR_DIABLO, 5000, gerr);
+
+		b = a;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) == 0, "identical characters differ in nothing");
+
+		b = a;
+		b.InvBody[INVLOC_HEAD].idx = 5;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) > 0, "an equipment change counts");
+		b = a;
+		b.SpdList[0].idx = 24;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) > 0, "a belt change counts");
+		b = a;
+		b.InvList[0].iSeed ^= 1;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) > 0, "an inventory change counts");
+		b = a;
+		b.pDifficulty = 2;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) > 0, "so does a field with no line of its own");
+
+		/* Cached total already at the target, stacks not: still a change. */
+		a.pGold = 9000;
+		b = a;
+		hero_set_gold(&b, FLAVOR_DIABLO, 9000, gerr);
+		ok(a.pGold == b.pGold && format_diff(&a, &b, FLAVOR_DIABLO, sink) > 0,
+		    "relaying the stacks under an unchanged cached total counts");
+
+		b = a;
+		hero_set_gold(&b, FLAVOR_DIABLO, 15000, gerr);
+		a.pGold = 5000;
+		ok(format_diff(&a, &b, FLAVOR_DIABLO, sink) == 1, "an ordinary gold edit is one change");
+		if (sink != stdout) {
+			fclose(sink);
+			remove(sink_path);
+		}
+	}
+
+	/* A total near INT_MAX overflowed the stack count and was accepted. */
+	{
+		PkPlayerStruct p;
+		char gerr[HERO_ERR_LEN];
+		base_hero(&p, PC_WARRIOR);
+		ok(!hero_set_gold(&p, FLAVOR_DIABLO, 2147483647, gerr),
+		    "an absurd gold total is refused, not wrapped");
+	}
+
 	/* Round-trip: the exp for level L must compute back to level L. */
 	int bad = 0;
 	for (int l = 1; l <= hero_max_level(); l++) {

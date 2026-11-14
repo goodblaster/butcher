@@ -1026,6 +1026,149 @@ static void check_real_save(void)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 8. `set` refuses what it cannot store                               */
+/* ------------------------------------------------------------------ */
+
+static int run_cli(const char *args, char *out, size_t n)
+{
+	char cmd[4096];
+	snprintf(cmd, sizeof(cmd), "%s %s 2>&1", g_exe, args);
+	return test_run(cmd, out, n);
+}
+
+static void check_set_cli(void)
+{
+	section("8. set refuses what the save cannot hold");
+
+	if (g_exe == NULL) {
+		printf("  SKIP  set BUTCHER_EXE to the built binary to test the command\n");
+		return;
+	}
+
+	const char *dir = getenv("BUTCHER_TMPDIR");
+	if (dir == NULL)
+		dir = ".";
+
+	char out[8192];
+	char args[4096];
+	char path[1024];
+	char err[MPQ_ERR_LEN];
+	PkPlayerStruct h, back;
+
+	/*
+	 * Out-of-range numbers. They used to be cast into the field first, so
+	 * --str 300 became 44 -- a valid strength -- and was written.
+	 */
+	snprintf(path, sizeof(path), "%s/setcli.sv", dir);
+	remove(path);
+	ok(hero_create(&h, FLAVOR_DIABLO, PC_WARRIOR, "Setter", err)
+	        && save_create(path, &h, err),
+	    "a Diablo save to edit");
+
+	snprintf(args, sizeof(args), "set %s --str 300 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "--str 300 is refused");
+	snprintf(args, sizeof(args), "set %s --statpts 261 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "--statpts 261 is refused");
+	snprintf(args, sizeof(args), "set %s --class 300 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "--class 300 is refused");
+	snprintf(args, sizeof(args), "set %s --hp 40000000 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 2,
+	    "--hp past what fixed point can hold is refused");
+	snprintf(args, sizeof(args), "set %s --gold 2147483647 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "--gold 2147483647 is refused");
+	ok(save_read_hero(path, &back, NULL, err) && memcmp(&h, &back, sizeof(h)) == 0,
+	    "  ...and none of them changed the save");
+
+	snprintf(args, sizeof(args), "set %s --str 31 --no-backup", path);
+	ok(run_cli(args, out, sizeof(out)) == 0, "--str 31 still works");
+	ok(save_read_hero(path, &back, NULL, err) && back.pBaseStr == 31,
+	    "  ...and is what was written");
+
+	/*
+	 * A hero only the multiplayer password opens. `set` and `fix` printed a
+	 * note and re-encoded it as single-player, which the game cannot read.
+	 */
+	{
+		alignas(4) BYTE blob[1288];
+		memset(blob, 0, sizeof(blob));
+		memcpy(blob, &h, sizeof(h));
+		codec_encode(blob, sizeof(h), 1288, SAVE_PASSWORD_MULTI);
+		ok(mpq_replace_file(path, "hero", blob, 1288, err),
+		    "the same save, its hero under the multiplayer password");
+
+		snprintf(args, sizeof(args), "set %s --str 32 --no-backup", path);
+		ok(run_cli(args, out, sizeof(out)) != 0, "set refuses it");
+		ok(strstr(out, "multiplayer") != NULL, "  ...and says why");
+		snprintf(args, sizeof(args), "set %s --str 32 --dry-run", path);
+		ok(run_cli(args, out, sizeof(out)) != 0, "even as a dry run");
+		snprintf(args, sizeof(args), "fix %s --all --no-backup", path);
+		ok(run_cli(args, out, sizeof(out)) != 0, "fix refuses it too");
+
+		int multi = 0;
+		ok(save_read_hero(path, &back, &multi, err) && multi
+		        && memcmp(&h, &back, sizeof(h)) == 0,
+		    "  ...and the hero is as it was, still multiplayer-encoded");
+	}
+	remove(path);
+
+	/*
+	 * Every spell Hellfire can store, in one command. The list held 37 and
+	 * dropped the rest without a word.
+	 */
+	snprintf(path, sizeof(path), "%s/setcli.hsv", dir);
+	remove(path);
+	ok(hero_create(&h, FLAVOR_HELLFIRE, PC_SORCERER, "Speller", err)
+	        && save_create(path, &h, err),
+	    "a Hellfire save to edit");
+	{
+		size_t used = (size_t)snprintf(args, sizeof(args), "set %s --no-backup", path);
+		int asked = 0;
+		for (int s = 1; s < hero_spell_persisted(); s++) {
+			if (!hero_spell_exists(FLAVOR_HELLFIRE, s))
+				continue;
+			used += (size_t)snprintf(args + used, sizeof(args) - used,
+			    " --spell %d=3", s);
+			asked++;
+		}
+		okf(asked > 37, "%d spells asked for at once", asked);
+		ok(run_cli(args, out, sizeof(out)) == 0, "the command succeeds");
+
+		int got = 0;
+		if (save_read_hero(path, &back, NULL, err))
+			for (int s = 1; s < hero_spell_persisted(); s++)
+				if (hero_spell_exists(FLAVOR_HELLFIRE, s)
+				    && hero_get_spell_level(&back, s) == 3)
+					got++;
+		okf(got == asked, "all %d were written (%d were)", asked, got);
+	}
+	remove(path);
+
+	/* `new` used to ignore a level or gold it could not use. */
+	snprintf(path, sizeof(path), "%s/newcli.sv", dir);
+	remove(path);
+	snprintf(args, sizeof(args), "new %s --class rogue --name Zed --level 0", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "new --level 0 is refused");
+	snprintf(args, sizeof(args), "new %s --class rogue --name Zed --gold -5", path);
+	ok(run_cli(args, out, sizeof(out)) == 2, "new --gold -5 is refused");
+	ok(!save_read_hero(path, &back, NULL, err), "  ...and no save was created");
+	remove(path);
+
+	/* A document nested far past anything real must fail, not crash. */
+	snprintf(path, sizeof(path), "%s/deep.json", dir);
+	{
+		FILE *f = fopen(path, "wb");
+		for (int i = 0; f != NULL && i < 300000; i++)
+			fputc('[', f);
+		if (f != NULL)
+			fclose(f);
+		snprintf(args, sizeof(args), "validate %s", path);
+		ok(run_cli(args, out, sizeof(out)) == 1,
+		    "validate reports a hopelessly nested document as an error");
+	}
+	remove(path);
+}
+
 int main(void)
 {
 	printf("Devilution character editor -- Phase 6 validation\n");
@@ -1041,6 +1184,7 @@ int main(void)
 	check_suggestions();
 	check_input_kinds();
 	check_real_save();
+	check_set_cli();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

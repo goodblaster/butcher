@@ -568,6 +568,60 @@ static void check_real_save(void)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 4b. Things an export must survive                                   */
+/* ------------------------------------------------------------------ */
+
+static void check_limits(void)
+{
+	section("4b. the document's own limits");
+
+	/*
+	 * Spell-book bits above id 46 travel in advanced.mem_spells_extra_bits.
+	 * They start at bit 46 of a 64-bit field, so checking that key as a
+	 * 32-bit number rejected every document that actually carried one.
+	 */
+	{
+		PkPlayerStruct h, back;
+		base_hero(&h, PC_SORCERER);
+		h.pMemSpells |= SPELLBIT(47) | (1ULL << 63);
+		char *text = charjson_write(&h, FLAVOR_HELLFIRE, nowarn);
+
+		DiagList dl;
+		dl_init(&dl);
+		charjson_check(text, &dl);
+		ok(dl_count(&dl, DIAG_ERROR) == 0,
+		    "an export carrying high spell-book bits passes its own check");
+		for (int i = 0; i < dl.n; i++)
+			if (dl.items[i].level == DIAG_ERROR)
+				printf("        %s: %s\n", dl.items[i].where, dl.items[i].msg);
+		dl_free(&dl);
+
+		char err[JSON_ERR_LEN];
+		ok(charjson_read(text, &back, NULL, err) && memcmp(&h, &back, sizeof(h)) == 0,
+		    "  ...and imports byte for byte");
+		free(text);
+	}
+
+	/* The parser recurses per level; a file of '[' ran it off the stack. */
+	{
+		const size_t n = 300000;
+		char *deep = (char *)malloc(n + 1);
+		memset(deep, '[', n);
+		deep[n] = '\0';
+		char err[JSON_ERR_LEN] = { 0 };
+		JValue *v = json_parse(deep, err);
+		ok(v == NULL, "300000 nested arrays are refused rather than crashing");
+		ok(strstr(err, "deep") != NULL, "  ...with a message about the nesting");
+		jv_free(v);
+		free(deep);
+
+		JValue *fine = json_parse("[[[[[[[[1]]]]]]]]", err);
+		ok(fine != NULL, "ordinary nesting still parses");
+		jv_free(fine);
+	}
+}
+
 int main(void)
 {
 	g_tmpdir = getenv("BUTCHER_TMPDIR");
@@ -586,6 +640,7 @@ int main(void)
 	check_parser();
 	check_end_to_end();
 	check_real_save();
+	check_limits();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

@@ -160,7 +160,9 @@ the end of `InvGrid`, and re-running it changed nothing.
 
 ## Still not covered
 
-Equipment (`InvBody`) and the belt (`SpdList`) are located but not written —
-butcher does not edit those anyway. Non-gold items cannot be created, only
+Equipment (`InvBody`) and the belt (`SpdList`) are located but not written.
+The sheet and `set` do not edit them, but `import` and `patch` can, so a commit
+that changes either — or the details of a non-gold inventory item — while a
+game is in progress is refused outright rather than written to `hero` alone. Non-gold items cannot be created, only
 moved, because everything but gold is generated from a seed by the game's own
 item generator.

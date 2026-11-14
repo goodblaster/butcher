@@ -263,6 +263,26 @@ struct Editor {
 		return 1;
 	}
 
+	/**
+	 * @p h has just been written to disk: make it the new baseline.
+	 *
+	 * `entry` is brought up to date as well as `original`, name included,
+	 * because the caller copies it back over the picker's list. Leaving that
+	 * list holding the character as first read meant leaving the sheet and
+	 * reopening it loaded the pre-save character as "unchanged" -- and the
+	 * next save wrote that stale copy over the edits already on disk.
+	 */
+	void Saved(const PkPlayerStruct &h)
+	{
+		original = h;
+		entry.hero = h;
+		memcpy(entry.name, h.pName, PLR_NAME_LEN);
+		entry.name[PLR_NAME_LEN] = '\0';
+		level_opened = level_target;
+		level_stored = h.pLevel;
+		gold_opened = gold;
+	}
+
 	/** Rebase Compose() on @p h and show it, leaving entry.hero as the file. */
 	void ApplyRepair(const PkPlayerStruct &h)
 	{

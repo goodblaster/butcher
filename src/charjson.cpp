@@ -582,6 +582,8 @@ typedef struct FSpec {
 #define R_SHORT (-32768), 32767
 #define R_INT (-2147483647LL - 1), 2147483647LL
 #define R_DWORD 0, 4294967295LL
+/* The whole of pMemSpells, which is 64 bits wide. */
+#define R_INT64 (-9223372036854775807LL - 1), 9223372036854775807LL
 #define R_NONE 0, 0
 
 /* Life and mana are shifted left by 6 on the way in, so the whole-point value
@@ -670,7 +672,8 @@ static const FSpec spec_adv[] = {
 	{ "reserved2", F_INT, R_SHORT },
 	{ "reserved8", F_INT, R_SHORT },
 	{ "reserved_dwords", F_ARR, R_NONE },
-	{ "mem_spells_extra_bits", F_INT, R_INT },
+	/* Bits 46 and up of a 64-bit field, so never a 32-bit value. */
+	{ "mem_spells_extra_bits", F_INT, R_INT64 },
 	{ NULL, F_ANY, R_NONE }
 };
 

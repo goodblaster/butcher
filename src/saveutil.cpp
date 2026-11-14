@@ -196,6 +196,14 @@ int save_commit(const char *path, const PkPlayerStruct *h, int backup, char *err
 int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
     SaveGameSync *sync, char *err)
 {
+	return save_commit_bak(path, h, backup, NULL, 0, sync, err);
+}
+
+int save_commit_bak(const char *path, const PkPlayerStruct *h, int backup,
+    char *bak, size_t bak_len, SaveGameSync *sync, char *err)
+{
+	if (bak != NULL && bak_len > 0)
+		bak[0] = '\0';
 	if (sync != NULL)
 		*sync = SAVE_GAME_ABSENT;
 
@@ -206,8 +214,20 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 	 * half-applied edit this exists to prevent.
 	 */
 	PkPlayerStruct old;
-	if (!save_read_hero(path, &old, NULL, err))
+	int multi = 0;
+	if (!save_read_hero(path, &old, &multi, err))
 		return 0;
+	/*
+	 * Everything below writes single-player encoding. A hero that only the
+	 * multiplayer password opens would come back as one the game can no
+	 * longer decode, so this is refused here, once, for every caller.
+	 */
+	if (multi) {
+		seterr(err, "this save's character uses the multiplayer password; "
+		            "writing it back as single-player would break it. "
+		            "Multiplayer saves are not supported.");
+		return 0;
+	}
 
 	DWORD glen = 0;
 	int present = 0;
@@ -229,6 +249,21 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 			seterr(err, "%s", gerr);
 			return 0;
 		}
+		/*
+		 * Equipment and the belt are not written into a saved game (see
+		 * docs/GAMEFILE.md), so a change to either would reach "hero" alone
+		 * and be discarded on load -- while this reported the two copies in
+		 * step. Refused before anything is touched.
+		 */
+		if (memcmp(old.InvBody, h->InvBody, sizeof(old.InvBody)) != 0
+		    || memcmp(old.SpdList, h->SpdList, sizeof(old.SpdList)) != 0) {
+			free(game);
+			seterr(err, "this save holds a game in progress, and changes to "
+			            "equipment or the belt cannot be applied to it -- the "
+			            "game would discard them on load. Nothing was written. "
+			            "Make the change with no game in progress.");
+			return 0;
+		}
 		game_apply(game, glen, &loc, h);
 
 		/*
@@ -237,10 +272,8 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 		 * tick, so a gold change that reaches only the packed copy is undone
 		 * on the first frame of play.
 		 */
-		items_moved = memcmp(old.InvBody, h->InvBody, sizeof(old.InvBody)) != 0
-		    || memcmp(old.InvList, h->InvList, sizeof(old.InvList)) != 0
+		items_moved = memcmp(old.InvList, h->InvList, sizeof(old.InvList)) != 0
 		    || memcmp(old.InvGrid, h->InvGrid, sizeof(old.InvGrid)) != 0
-		    || memcmp(old.SpdList, h->SpdList, sizeof(old.SpdList)) != 0
 		    || old._pNumInv != h->_pNumInv;
 
 		if (items_moved) {
@@ -253,7 +286,7 @@ int save_commit_ex(const char *path, const PkPlayerStruct *h, int backup,
 		}
 	}
 
-	if (backup && !save_backup(path, err)) {
+	if (backup && !save_backup_to(path, bak, bak_len, err)) {
 		free(game);
 		return 0;
 	}

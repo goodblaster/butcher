@@ -904,6 +904,168 @@ static void check_real_save(void)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 6. Writes that must be refused rather than half-applied             */
+/* ------------------------------------------------------------------ */
+
+/** A character carrying three gold piles and one ordinary item. */
+static void hero_with_items(PkPlayerStruct *h, const char *name)
+{
+	char err[HERO_ERR_LEN];
+	base_hero(h, name, PC_WARRIOR);
+	hero_set_gold(h, FLAVOR_HELLFIRE, 12000, err);
+	int slot = h->_pNumInv;
+	h->InvList[slot].idx = 24;
+	h->InvList[slot].iSeed = 0x4242;
+	h->InvList[slot].bDur = 10;
+	h->InvList[slot].bMDur = 20;
+	h->InvGrid[0] = (char)(slot + 1);
+	h->_pNumInv = (BYTE)(slot + 1);
+}
+
+static void check_refusals(void)
+{
+	section("6. writes that would only half-apply are refused");
+
+	char err[MPQ_ERR_LEN] = { 0 };
+	char path[1024];
+	snprintf(path, sizeof(path), "%s", tmppath("single_6.hsv"));
+
+	/*
+	 * The codec's trailer says how much of the last block is real, and the
+	 * checksum does not cover it. Claiming more than a block made the decoded
+	 * length longer than the buffer holding it.
+	 */
+	{
+		PkPlayerStruct h;
+		hero_with_items(&h, "Trailer");
+		remove(path);
+		ok(make_save_ex(path, &h, 1) == 0, "a save with a game in progress");
+
+		MpqArchive *a = mpq_open(path, err);
+		DWORD len = 0;
+		BYTE *enc = a != NULL ? mpq_read_file(a, "game", &len, err) : NULL;
+		mpq_close(a);
+		ok(enc != NULL && len > 8, "its encoded saved game reads");
+		if (enc != NULL) {
+			enc[len - 8 + 5] = 255; /* CodecSignature.last_chunk_size */
+			ok(mpq_replace_file(path, "game", enc, len, err),
+			    "a trailer claiming a 255-byte last block is written in");
+			free(enc);
+
+			DWORD glen = 0;
+			int present = 0;
+			BYTE *g = game_read(path, &glen, &present, err);
+			ok(g == NULL, "game_read refuses a decoded length past its buffer");
+			ok(present, "  ...while still reporting the saved game as present");
+			free(g);
+
+			uint64_t was = file_hash(path);
+			PkPlayerStruct n = h;
+			n.pBaseStr = 31;
+			ok(!save_commit(path, &n, 0, err), "and a commit on that save fails");
+			ok(file_hash(path) == was, "  ...leaving the file untouched");
+		}
+		remove(path);
+	}
+
+	/* A hero only the multiplayer password opens must not be re-encoded. */
+	{
+		PkPlayerStruct h;
+		base_hero(&h, "Multi", PC_ROGUE);
+		remove(path);
+		make_save_ex(path, &h, 0);
+		alignas(4) BYTE blob[1288];
+		memset(blob, 0, sizeof(blob));
+		memcpy(blob, &h, sizeof(h));
+		codec_encode(blob, sizeof(h), 1288, SAVE_PASSWORD_MULTI);
+		ok(mpq_replace_file(path, "hero", blob, 1288, err),
+		    "a save whose hero uses the multiplayer password");
+
+		uint64_t was = file_hash(path);
+		PkPlayerStruct n = h;
+		n.pBaseStr = 31;
+		ok(!save_commit(path, &n, 0, err), "a commit to it is refused");
+		ok(strstr(err, "multiplayer") != NULL, "  ...and says why");
+		ok(file_hash(path) == was, "  ...leaving the file untouched");
+
+		int multi = 0;
+		PkPlayerStruct back;
+		ok(save_read_hero(path, &back, &multi, err) && multi,
+		    "  ...still readable with the multiplayer password");
+		remove(path);
+	}
+
+	/*
+	 * Equipment, the belt and the details of an ordinary item are not written
+	 * into a saved game. Committing such a change used to succeed and report
+	 * the two copies in step, for an edit the game discards on load.
+	 */
+	{
+		PkPlayerStruct h;
+		hero_with_items(&h, "Equip");
+		remove(path);
+		make_save_ex(path, &h, 1);
+		uint64_t was = file_hash(path);
+		SaveGameSync sync = SAVE_GAME_ABSENT;
+
+		PkPlayerStruct n = h;
+		n.InvBody[INVLOC_HEAD].idx = 5;
+		n.InvBody[INVLOC_HEAD].iSeed = 12345;
+		ok(!save_commit_ex(path, &n, 0, &sync, err),
+		    "an equipment change with a game in progress is refused");
+		ok(strstr(err, "equipment") != NULL, "  ...and says why");
+
+		n = h;
+		n.SpdList[0].idx = 24;
+		n.SpdList[0].iSeed = 777;
+		ok(!save_commit_ex(path, &n, 0, &sync, err), "so is a belt change");
+
+		n = h;
+		n.InvList[h._pNumInv - 1].bDur = 20;
+		ok(!save_commit_ex(path, &n, 0, &sync, err),
+		    "so is a change to an ordinary item's durability");
+		ok(file_hash(path) == was, "none of the three touched the file");
+
+		/* A refusal must not leave a backup of a save it never changed. */
+		char bak[1024], named[1024] = "unset";
+		snprintf(bak, sizeof(bak), "%s.bak", path);
+		remove(bak);
+		ok(!save_commit_bak(path, &n, /*backup=*/1, named, sizeof(named), &sync, err),
+		    "the same refusal with a backup requested");
+		ok(!exists(bak) && named[0] == '\0', "  ...makes no backup");
+
+		n = h;
+		n.pBaseStr = 31;
+		ok(save_commit_bak(path, &n, /*backup=*/1, named, sizeof(named), &sync, err),
+		    "an edit that goes through with a backup requested");
+		ok(exists(bak) && strcmp(named, bak) == 0, "  ...makes one and names it");
+		ok(file_hash(bak) == was, "  ...holding the save as it was before");
+		remove(bak);
+		remove(path);
+		make_save_ex(path, &h, 1);
+
+		/* What still has to work: gold, with the ordinary item carried along. */
+		n = h;
+		char herr[HERO_ERR_LEN];
+		hero_set_gold(&n, FLAVOR_HELLFIRE, 20000, herr);
+		ok(save_commit_ex(path, &n, 0, &sync, err), "a gold change still commits");
+		if (err[0] != '\0' && sync != SAVE_GAME_SYNCED_ITEMS)
+			printf("        %s\n", err);
+		ok(sync == SAVE_GAME_SYNCED_ITEMS, "  ...and reaches the saved game's items");
+		remove(path);
+
+		/* And with no game in progress there is only one copy to write. */
+		make_save_ex(path, &h, 0);
+		n = h;
+		n.InvBody[INVLOC_HEAD].idx = 5;
+		n.InvBody[INVLOC_HEAD].iSeed = 12345;
+		ok(save_commit_ex(path, &n, 0, &sync, err),
+		    "the same equipment change is fine with no game in progress");
+		remove(path);
+	}
+}
+
 int main(void)
 {
 	g_tmpdir = getenv("BUTCHER_TMPDIR");
@@ -922,6 +1084,7 @@ int main(void)
 	check_commit();
 	check_collisions();
 	check_real_save();
+	check_refusals();
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

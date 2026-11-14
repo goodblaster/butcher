@@ -36,8 +36,9 @@ static void warn_if_game_in_progress(const char *path)
 	    "\nnote: %s holds a game in progress.\n"
 	    "  The character is stored twice -- in \"hero\", which the character\n"
 	    "  selection screen shows, and in \"game\", which the game loads from once\n"
-	    "  you start playing. Edits are applied to both, so they will stick; the\n"
-	    "  inventory and everything else in the saved game is left alone.\n",
+	    "  you start playing. Edits are applied to both, so they will stick. Gold\n"
+	    "  is the only item that can be changed there; equipment and the belt\n"
+	    "  cannot, and an edit to either is refused rather than half-applied.\n",
 	    path);
 }
 
@@ -138,6 +139,30 @@ static int read_or_die(const char *path, PkPlayerStruct *h)
 	return 1;
 }
 
+/**
+ * read_or_die for a command that is going to write the save back.
+ *
+ * Writing always uses single-player encoding, so a hero that only the
+ * multiplayer password opens is refused here -- before a diff is printed or a
+ * dry run reports success for something a real run would break.
+ */
+static int read_for_write(const char *path, PkPlayerStruct *h)
+{
+	char err[MPQ_ERR_LEN] = { 0 };
+	int multi = 0;
+	if (!save_read_hero(path, h, &multi, err)) {
+		fprintf(stderr, "butcher: %s\n", err);
+		return 0;
+	}
+	if (multi) {
+		fprintf(stderr, "butcher: this archive's hero uses the multiplayer "
+		                "password; writing it back as single-player would break "
+		                "it. Multiplayer saves are not supported.\n");
+		return 0;
+	}
+	return 1;
+}
+
 static int cmd_show(int argc, char **argv)
 {
 	if (argc != 1) {
@@ -219,17 +244,14 @@ static int commit(const char *path, const PkPlayerStruct *h, HeroFlavor f, int b
 {
 	char err[MPQ_ERR_LEN] = { 0 };
 
-	if (backup) {
-		char bak[SAVE_PATH_MAX];
-		if (!save_backup_to(path, bak, sizeof(bak), err)) {
-			fprintf(stderr, "butcher: %s\n", err);
-			return 1;
-		}
-		printf("backed up to %s\n", bak);
-	}
-
+	/* The backup is made inside the commit, once nothing can refuse any more,
+	 * so a rejected edit does not leave a copy behind. */
+	char bak[SAVE_PATH_MAX] = { 0 };
 	SaveGameSync sync = SAVE_GAME_ABSENT;
-	if (!save_commit_ex(path, h, /*backup=*/0, &sync, err)) {
+	int wrote = save_commit_bak(path, h, backup, bak, sizeof(bak), &sync, err);
+	if (bak[0] != '\0')
+		printf("backed up to %s\n", bak);
+	if (!wrote) {
 		fprintf(stderr, "butcher: %s\n", err);
 		return 1;
 	}
@@ -252,7 +274,7 @@ static int cmd_set(int argc, char **argv)
 	struct {
 		int spell;
 		int level;
-	} spells[MAX_SPELLS];
+	} spells[64]; /* as many as pend[] below, so none can be dropped */
 	int nspells = 0;
 
 	/* Collect option/value pairs first; apply once the hero is loaded. */
@@ -298,7 +320,7 @@ static int cmd_set(int argc, char **argv)
 	}
 
 	PkPlayerStruct before;
-	if (!read_or_die(path, &before))
+	if (!read_for_write(path, &before))
 		return 1;
 	PkPlayerStruct h = before;
 	HeroFlavor flavor = flavor_of(path);
@@ -319,6 +341,30 @@ static int cmd_set(int argc, char **argv)
 		}                                                            \
 	} while (0)
 
+/*
+ * A number that has to fit the field it lands in. Casting first and checking
+ * afterwards is no check at all: --str 300 became 44, a perfectly valid
+ * strength, and was written without a word.
+ */
+#define NEEDRANGE(lo, hi)                                                    \
+	do {                                                                     \
+		NEEDINT();                                                           \
+		if (n < (lo) || n > (hi)) {                                          \
+			fprintf(stderr, "%s: %d is outside %d..%d, the range the save "  \
+			                "can store\n",                                   \
+			    o, n, (int)(lo), (int)(hi));                                 \
+			return 2;                                                        \
+		}                                                                    \
+	} while (0)
+/* Whole points are shifted left six bits on the way in. */
+#define NEEDPOINTS()                                                         \
+	do {                                                                     \
+		if (raw)                                                             \
+			NEEDINT();                                                       \
+		else                                                                 \
+			NEEDRANGE(-33554432, 33554431);                                  \
+	} while (0)
+
 		if (strcmp(o, "--name") == 0) {
 			char err[HERO_ERR_LEN];
 			if (!hero_name_valid(v, err)) {
@@ -337,10 +383,10 @@ static int cmd_set(int argc, char **argv)
 			memset(h.pName, 0, PLR_NAME_LEN);
 			strncpy(h.pName, v, PLR_NAME_LEN - 1);
 		} else if (strcmp(o, "--class") == 0) {
-			NEEDINT();
+			NEEDRANGE(-128, 127);
 			h.pClass = (char)n;
 		} else if (strcmp(o, "--level") == 0) {
-			NEEDINT();
+			NEEDRANGE(-128, 127);
 			/*
 			 * A real level-up, not just the number: NextPlrLevel grants stat
 			 * points, life and mana per level, and a character raised without
@@ -361,31 +407,31 @@ static int cmd_set(int argc, char **argv)
 			NEEDINT();
 			h.pExperience = n;
 		} else if (strcmp(o, "--statpts") == 0) {
-			NEEDINT();
+			NEEDRANGE(0, 255);
 			h.pStatPts = (BYTE)n;
 		} else if (strcmp(o, "--str") == 0) {
-			NEEDINT();
+			NEEDRANGE(0, 255);
 			h.pBaseStr = (BYTE)n;
 		} else if (strcmp(o, "--mag") == 0) {
-			NEEDINT();
+			NEEDRANGE(0, 255);
 			h.pBaseMag = (BYTE)n;
 		} else if (strcmp(o, "--dex") == 0) {
-			NEEDINT();
+			NEEDRANGE(0, 255);
 			h.pBaseDex = (BYTE)n;
 		} else if (strcmp(o, "--vit") == 0) {
-			NEEDINT();
+			NEEDRANGE(0, 255);
 			h.pBaseVit = (BYTE)n;
 		} else if (strcmp(o, "--hp") == 0) {
-			NEEDINT();
+			NEEDPOINTS();
 			h.pHPBase = raw ? n : HERO_FROM_WHOLE(n);
 		} else if (strcmp(o, "--maxhp") == 0) {
-			NEEDINT();
+			NEEDPOINTS();
 			h.pMaxHPBase = raw ? n : HERO_FROM_WHOLE(n);
 		} else if (strcmp(o, "--mana") == 0) {
-			NEEDINT();
+			NEEDPOINTS();
 			h.pManaBase = raw ? n : HERO_FROM_WHOLE(n);
 		} else if (strcmp(o, "--maxmana") == 0) {
-			NEEDINT();
+			NEEDPOINTS();
 			h.pMaxManaBase = raw ? n : HERO_FROM_WHOLE(n);
 		} else if (strcmp(o, "--dlvl") == 0) {
 			/*
@@ -437,15 +483,19 @@ static int cmd_set(int argc, char **argv)
 				fprintf(stderr, "--spell: level must be a number\n");
 				return 2;
 			}
-			if (nspells < (int)(sizeof(spells) / sizeof(spells[0]))) {
-				spells[nspells].spell = sid;
-				spells[nspells].level = lvl;
-				nspells++;
+			if (nspells == (int)(sizeof(spells) / sizeof(spells[0]))) {
+				fprintf(stderr, "too many --spell options\n");
+				return 2;
 			}
+			spells[nspells].spell = sid;
+			spells[nspells].level = lvl;
+			nspells++;
 		} else {
 			fprintf(stderr, "unknown option %s\n", o);
 			return 2;
 		}
+#undef NEEDPOINTS
+#undef NEEDRANGE
 #undef NEEDINT
 	}
 
@@ -739,6 +789,17 @@ static int cmd_new(int argc, char **argv)
 		return 2;
 	}
 
+	/* Said rather than skipped: --level 0 and --gold -5 used to be ignored
+	 * and the character created anyway. */
+	if (level < 1 || level > hero_max_level()) {
+		fprintf(stderr, "--level must be 1..%d\n", hero_max_level());
+		return 2;
+	}
+	if (gold < 0) {
+		fprintf(stderr, "--gold cannot be negative\n");
+		return 2;
+	}
+
 	HeroFlavor f = flavor_of(path);
 
 	int pclass = -1;
@@ -871,7 +932,7 @@ static int cmd_fix(int argc, char **argv)
 	}
 
 	PkPlayerStruct h;
-	if (!read_or_die(path, &h))
+	if (!read_for_write(path, &h))
 		return 1;
 	HeroFlavor f = flavor_of(path);
 

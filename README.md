@@ -506,6 +506,8 @@ make fuzz FUZZ_CXX=clang++      # coverage-guided, with LLVM's libFuzzer
 
 Every input butcher reads was made by someone else, so the parsers — the MPQ
 reader, the saved-game patcher, JSON import — have fuzz harnesses in `fuzz/`.
+A fourth, `sealed`, damages a save's contents and then re-signs them, so the
+code behind the checksum is reached the way a crafted save would reach it.
 CI runs each under libFuzzer for a minute on every push, alongside the suites
 under ASan and UBSan.
 
